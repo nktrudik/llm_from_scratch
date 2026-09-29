@@ -9,7 +9,9 @@ description = "A compact decoder-only Transformer implemented with PyTorch."
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
+    "beautifulsoup4>=4.13",
     "numpy>=2.5.3",
+    "requests>=2.32",
     "torch>=2.6",
 ]
 
@@ -19,6 +21,8 @@ dev = [
     "mypy>=1.14",
     "pytest>=8.3",
     "ruff>=0.9",
+    "types-beautifulsoup4>=4.12",
+    "types-requests>=2.32",
 ]
 
 [tool.setuptools.packages.find]
@@ -27,6 +31,7 @@ where = ["src"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+addopts = "--basetemp=.pytest-tmp"
 
 [tool.ruff]
 line-length = 100
