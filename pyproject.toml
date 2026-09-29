@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mini-llm"
+version = "0.1.0"
+description = "A compact decoder-only Transformer implemented with PyTorch."
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "numpy>=2.5.3",
+    "torch>=2.6",
+]
+
+[project.optional-dependencies]
+dev = [
+    "bandit>=1.8",
+    "mypy>=1.14",
+    "pytest>=8.3",
+    "ruff>=0.9",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+extend-exclude = [".venv", ".uv-cache", ".cache"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.mypy]
+python_version = "3.13"
+strict = true
+files = ["src", "tests"]
