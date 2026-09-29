@@ -37,7 +37,7 @@ def test_cleaning_removes_technical_noise_but_preserves_voice() -> None:
     assert not is_image_dependent("Да")
 
 
-def test_reply_graph_builds_full_ancestor_history_and_root_fallback() -> None:
+def test_reply_graph_requires_explicit_parent_and_keeps_ancestor_history() -> None:
     thread = RawThread(
         board="b",
         thread_id=10,
@@ -58,10 +58,15 @@ def test_reply_graph_builds_full_ancestor_history_and_root_fallback() -> None:
     assert _context_post_ids(samples[0]) == [1]
     assert _context_post_ids(samples[1]) == [1, 2]
     assert _context_post_ids(samples[2]) == [1, 2]
-    assert _context_post_ids(samples[3]) == [1]
     assert samples[1]["source_post_ids"] == [1, 2, 3]
     assert _nested_object(samples[2], "metadata")["multi_reference"] is True
-    assert _nested_object(samples[3], "response")["text"] == "Да"
+    assert len(samples) == 3
+    assert stats.dropped["missing_reliable_parent"] == 1
+    assert stats.thread_root_fallback_samples_prevented == 1
+    assert all(
+        _nested_object(sample, "metadata")["parent_strategy"] == "explicit_references"
+        for sample in samples
+    )
 
 
 def test_reliably_separated_multi_reference_response_creates_two_samples() -> None:
@@ -176,3 +181,5 @@ def test_pipeline_writes_dataset_stats_review_and_keeps_raw_immutable(tmp_path: 
     assert stats.samples_created == 1
     assert stats.dropped["exact_duplicate"] == 1
     assert stats_payload["duplicate_or_near_duplicate_samples"] == 1
+    assert stats_payload["messages_dropped_without_reliable_parent"] == 0
+    assert stats_payload["thread_root_fallback_samples_prevented"] == 0

@@ -18,3 +18,4 @@ data/raw/*
 data/processed/*
 !data/processed/README.md
 checkpoints/
+artifacts/

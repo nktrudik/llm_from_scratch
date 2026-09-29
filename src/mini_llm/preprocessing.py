@@ -276,7 +276,7 @@ def iter_thread_samples(
             if reference in order and order[reference] < order[post.post_id]
         )
         if post.post_id != root_id:
-            parents_by_id[post.post_id] = valid_parents or (() if post.references else (root_id,))
+            parents_by_id[post.post_id] = valid_parents
 
     for post in thread.posts[1:]:
         stats.candidate_responses += 1
@@ -288,7 +288,15 @@ def iter_thread_samples(
         if len(post.references) > 1:
             stats.multi_reference_posts += 1
         if not direct_parents:
-            stats.dropped["missing_parent"] += 1
+            stats.dropped["missing_reliable_parent"] += 1
+            if not post.references and root_id in cleaned_by_id:
+                old_fallback_response = _remove_context_quotes(
+                    cleaned_by_id[post.post_id], [cleaned_by_id[root_id]]
+                )
+                if is_meaningful_text(old_fallback_response) and not is_image_dependent(
+                    old_fallback_response
+                ):
+                    stats.thread_root_fallback_samples_prevented += 1
             continue
 
         split_responses = _split_multi_reference_response(post.text, direct_parents)
@@ -339,9 +347,7 @@ def iter_thread_samples(
                     "context_depth": len(context),
                     "multi_reference": len(direct_parents) > 1,
                     "split_from_multi_reference": was_split,
-                    "parent_strategy": (
-                        "explicit_references" if post.references else "thread_root_fallback"
-                    ),
+                    "parent_strategy": "explicit_references",
                 },
             }
             stats.record_sample(sample)

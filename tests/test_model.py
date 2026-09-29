@@ -82,3 +82,16 @@ def test_default_parameter_count_is_in_expected_range() -> None:
 
     assert 5_000_000 <= model.num_parameters() <= 5_500_000
     assert model.output_projection.weight is model.token_embeddings.weight
+
+
+def test_dialogue_special_token_ids_are_distinct() -> None:
+    config = ModelConfig()
+
+    assert (
+        config.pad_token_id,
+        config.unk_token_id,
+        config.bos_token_id,
+        config.eos_token_id,
+        config.user_token_id,
+        config.assistant_token_id,
+    ) == (0, 1, 2, 3, 4, 5)

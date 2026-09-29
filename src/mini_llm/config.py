@@ -20,6 +20,8 @@ class ModelConfig:
     unk_token_id: int = 1
     bos_token_id: int = 2
     eos_token_id: int = 3
+    user_token_id: int = 4
+    assistant_token_id: int = 5
 
     def __post_init__(self) -> None:
         positive_values = {
@@ -44,8 +46,10 @@ class ModelConfig:
             self.unk_token_id,
             self.bos_token_id,
             self.eos_token_id,
+            self.user_token_id,
+            self.assistant_token_id,
         }
-        if len(special_token_ids) != 4:
+        if len(special_token_ids) != 6:
             raise ValueError("Special token IDs must be distinct")
         if min(special_token_ids) < 0 or max(special_token_ids) >= self.vocab_size:
             raise ValueError("Special token IDs must be within the vocabulary")

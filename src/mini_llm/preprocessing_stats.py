@@ -31,6 +31,7 @@ class PreprocessingStats:
     multi_reference_posts: int = 0
     multi_reference_samples: int = 0
     split_multi_reference_samples: int = 0
+    thread_root_fallback_samples_prevented: int = 0
     review_samples: int = 0
     boards: Counter[str] = field(default_factory=Counter)
     dropped: Counter[str] = field(default_factory=Counter)
@@ -70,6 +71,8 @@ class PreprocessingStats:
             "multi_reference_posts": self.multi_reference_posts,
             "multi_reference_samples": self.multi_reference_samples,
             "split_multi_reference_samples": self.split_multi_reference_samples,
+            "messages_dropped_without_reliable_parent": self.dropped["missing_reliable_parent"],
+            "thread_root_fallback_samples_prevented": (self.thread_root_fallback_samples_prevented),
             "review_samples": self.review_samples,
             "threads_by_board": dict(sorted(self.boards.items())),
             "context_character_lengths": _distribution(self.context_char_lengths),

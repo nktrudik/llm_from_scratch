@@ -12,6 +12,7 @@ dependencies = [
     "beautifulsoup4>=4.13",
     "numpy>=2.5.3",
     "requests>=2.32",
+    "tokenizers>=0.22,<0.24",
     "torch>=2.6",
 ]
 
