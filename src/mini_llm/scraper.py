@@ -242,12 +242,19 @@ def parse_thread_document(payload: object, board: str, thread_id: int) -> Thread
     )
 
 
-def save_thread_document(document: ThreadDocument, output_dir: Path) -> Path:
-    """Save one thread under ``data/raw/2ch/<board>/<thread_id>.json``."""
+def thread_output_path(output_dir: Path, board: str, thread_id: int) -> Path:
+    """Return the canonical immutable raw path for one thread."""
 
-    board_dir = output_dir / "2ch" / document.board
-    board_dir.mkdir(parents=True, exist_ok=True)
-    output_path = board_dir / f"{document.thread_id}.json"
+    return output_dir / "2ch" / board / f"{thread_id}.json"
+
+
+def save_thread_document(document: ThreadDocument, output_dir: Path) -> Path | None:
+    """Save one new thread, returning ``None`` when its raw file already exists."""
+
+    output_path = thread_output_path(output_dir, document.board, document.thread_id)
+    if output_path.exists():
+        return None
+    output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(
         json.dumps(document.to_dict(), ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
@@ -371,16 +378,22 @@ class TwoChScraper:
             raise ValueError("max_threads must be positive when provided")
 
         if target.thread_id is not None:
-            thread_ids = [target.thread_id]
+            candidate_ids = [target.thread_id]
         else:
             catalog_url = f"{TWO_CH_BASE_URL}/{target.board}/catalog.json"
             catalog = self.fetch_json(catalog_url)
-            thread_ids = parse_catalog_thread_ids(catalog, max_threads)
+            candidate_ids = parse_catalog_thread_ids(catalog)
 
         output_paths: list[Path] = []
-        for thread_id in thread_ids:
+        for thread_id in candidate_ids:
+            if thread_output_path(self.config.output_dir, target.board, thread_id).exists():
+                continue
             document = self.scrape_thread(target.board, thread_id)
-            output_paths.append(save_thread_document(document, self.config.output_dir))
+            output_path = save_thread_document(document, self.config.output_dir)
+            if output_path is not None:
+                output_paths.append(output_path)
+            if max_threads is not None and len(output_paths) >= max_threads:
+                break
         return output_paths
 
 

@@ -111,24 +111,33 @@ class StubTwoChScraper(TwoChScraper):
         return self.responses[url]
 
 
-def test_board_url_downloads_limited_threads_sequentially(tmp_path: Path) -> None:
+def test_board_limit_counts_only_new_threads(tmp_path: Path) -> None:
     catalog_url = "https://2ch.org/b/catalog.json"
     first_thread_url = "https://2ch.org/b/res/200.json"
     second_thread_url = "https://2ch.org/b/res/100.json"
+    third_thread_url = "https://2ch.org/b/res/50.json"
     responses: dict[str, object] = {
-        catalog_url: {"threads": [{"num": 200}, {"num": 100}]},
+        catalog_url: {"threads": [{"num": 200}, {"num": 100}, {"num": 50}]},
         first_thread_url: thread_payload(200),
         second_thread_url: thread_payload(100),
+        third_thread_url: thread_payload(50),
     }
     config = ScraperConfig(output_dir=tmp_path)
+    existing_path = tmp_path / "2ch" / "b" / "200.json"
+    existing_path.parent.mkdir(parents=True)
+    existing_path.write_text('{"immutable": true}\n', encoding="utf-8")
 
     with StubTwoChScraper(config, responses) as scraper:
-        output_paths = scraper.scrape_to_files("https://2ch.org/b/", max_threads=1)
+        output_paths = scraper.scrape_to_files("https://2ch.org/b/", max_threads=2)
 
-    assert scraper.requested_urls == [catalog_url, first_thread_url]
-    assert output_paths == [tmp_path / "2ch" / "b" / "200.json"]
+    assert scraper.requested_urls == [catalog_url, second_thread_url, third_thread_url]
+    assert output_paths == [
+        tmp_path / "2ch" / "b" / "100.json",
+        tmp_path / "2ch" / "b" / "50.json",
+    ]
+    assert existing_path.read_text(encoding="utf-8") == '{"immutable": true}\n'
     payload = cast(dict[str, object], json.loads(output_paths[0].read_text(encoding="utf-8")))
-    assert payload["thread_id"] == 200
+    assert payload["thread_id"] == 100
     assert isinstance(payload["posts"], list)
 
 
@@ -142,3 +151,17 @@ def test_thread_url_uses_json_endpoint_without_catalog(tmp_path: Path) -> None:
     assert scraper.requested_urls == [api_url]
     assert output_paths[0].name == "777.json"
     assert output_paths[0].parent == tmp_path / "2ch" / "b"
+
+
+def test_existing_thread_url_is_not_downloaded_or_overwritten(tmp_path: Path) -> None:
+    config = ScraperConfig(output_dir=tmp_path)
+    existing_path = tmp_path / "2ch" / "b" / "777.json"
+    existing_path.parent.mkdir(parents=True)
+    existing_path.write_text("original\n", encoding="utf-8")
+
+    with StubTwoChScraper(config, {}) as scraper:
+        output_paths = scraper.scrape_to_files("https://2ch.org/b/res/777.html")
+
+    assert scraper.requested_urls == []
+    assert output_paths == []
+    assert existing_path.read_text(encoding="utf-8") == "original\n"

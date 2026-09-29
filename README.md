@@ -1,8 +1,8 @@
 # Mini LLM from scratch
 
-A compact decoder-only Transformer architecture implemented in PyTorch, plus a small utility for
-collecting raw text from ordinary HTML pages. The project still has no tokenizer, training loop,
-checkpoints, or text interface.
+A compact decoder-only Transformer architecture implemented in PyTorch, plus utilities for
+collecting raw 2ch threads and converting their reply graphs into dialogue samples. The project
+still has no tokenizer, training loop, checkpoints, or text interface.
 
 The default model uses 4 Transformer blocks, a width of 256, 4 attention heads, an FFN width of
 1024, a context window of 512 token IDs, and a vocabulary of 8192 token IDs. Token embeddings and
@@ -17,6 +17,26 @@ uv sync --extra dev
 ```
 
 If `uv` is unavailable, use `.\.venv\Scripts\python.exe -m pip install -e ".[dev]"`.
+
+## Module map
+
+- `mini_llm.config` defines the model hyperparameters and special token IDs. It is imported by
+  Python code and has no command-line entry point.
+- `mini_llm.model` contains causal attention, the MLP, Transformer blocks, the complete decoder,
+  and token-ID generation. Import it through `mini_llm`; do not run the module directly.
+- `mini_llm.scraper` is the collection CLI. It downloads only 2ch JSON metadata and post text into
+  immutable files under `data/raw/2ch/`.
+- `mini_llm.preprocessing` is the dataset-building CLI. It reads the completed raw snapshot and
+  writes dialogue JSONL, statistics, and a review sample under `data/processed/`.
+- `mini_llm.deduplication` and `mini_llm.preprocessing_stats` are internal helpers used by
+  preprocessing; they are not standalone commands.
+
+Show the CLI options without downloading or processing anything:
+
+```powershell
+.\.venv\Scripts\python.exe -m mini_llm.scraper --help
+.\.venv\Scripts\python.exe -m mini_llm.preprocessing --help
+```
 
 ## Create a model
 
@@ -56,9 +76,32 @@ A board URL downloads current threads sequentially. Use `--max-threads` to bound
 
 Each output contains thread metadata and a `posts` list with `post_id`, cleaned plain `text`, and
 `references` such as `>>123`. Attachments are not downloaded or included. `--timeout` and
-`--output-dir` override their defaults. The collector does not attempt to bypass authentication,
-CAPTCHA, Cloudflare, or other anti-bot protection. Check the site's terms and robots policy before
-collecting its content.
+`--output-dir` override their defaults. Existing raw thread files are immutable: the collector skips
+them, and `--max-threads N` counts only newly downloaded threads. The collector does not attempt to
+bypass authentication, CAPTCHA, Cloudflare, or other anti-bot protection. Check the site's terms
+and robots policy before collecting its content.
+
+## Build the processed dialogue dataset
+
+Preprocessing reads `data/raw/2ch/<board>/*.json` without modifying it and writes:
+
+- `data/processed/2ch_dialogues.jsonl` — ordered context and response samples;
+- `data/processed/2ch_preprocessing_stats.json` — filtering, length, deduplication, chain-depth,
+  board, and multi-reference statistics;
+- `data/processed/2ch_review_sample.jsonl` — deterministic random samples for manual review.
+
+Run it from the repository root:
+
+```powershell
+.\.venv\Scripts\python.exe -m mini_llm.preprocessing
+```
+
+The pipeline reconstructs reply ancestors from `post_id` and `references`, keeps conversational
+style, removes technical identifiers and markup, excludes clearly attachment-dependent examples,
+and conservatively removes long exact or near-copy responses across threads. It does not truncate
+contexts to 512 tokens; token budgeting belongs to the future tokenizer stage. Input/output paths,
+review size, and review seed can be changed with `--input-dir`, `--output-dir`, `--review-size`, and
+`--seed`.
 
 Run the checks from the repository root:
 
