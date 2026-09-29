@@ -39,26 +39,25 @@ prompt = torch.tensor([[config.bos_token_id, 42, 108]], dtype=torch.long)
 generated_ids = model.generate(prompt, max_new_tokens=8, temperature=0.8, top_k=20)
 ```
 
-## Collect one raw HTML document
+## Collect text from 2ch
 
-The scraper accepts one public HTTP(S) page, extracts useful paragraphs, and writes a JSON document
-containing `source_url`, `title`, `text`, and `fetched_at` to `data/raw/`:
-
-```powershell
-.\.venv\Scripts\python.exe -m mini_llm.scraper "https://example.com/page"
-```
-
-For `2ch.org` board and thread pages, the extractor prioritizes the current
-`.post .post__message` structure, so post controls, timestamps, and reply forms are not mixed into
-the collected text. For example:
+The collector uses the public 2ch JSON API. A thread URL downloads that complete thread and writes
+one text-only JSON file to `data/raw/2ch/<board>/<thread_id>.json`:
 
 ```powershell
 .\.venv\Scripts\python.exe -m mini_llm.scraper "https://2ch.org/b/res/THREAD_ID.html"
 ```
 
-Use `--min-text-length`, `--min-block-length`, `--timeout`, or `--output-dir` to override the
-conservative defaults. The scraper is sequential and does not attempt to bypass authentication,
-CAPTCHA, Cloudflare, or other anti-bot protection. Check a site's terms and robots policy before
+A board URL downloads current threads sequentially. Use `--max-threads` to bound a run:
+
+```powershell
+.\.venv\Scripts\python.exe -m mini_llm.scraper "https://2ch.org/b/" --max-threads 10
+```
+
+Each output contains thread metadata and a `posts` list with `post_id`, cleaned plain `text`, and
+`references` such as `>>123`. Attachments are not downloaded or included. `--timeout` and
+`--output-dir` override their defaults. The collector does not attempt to bypass authentication,
+CAPTCHA, Cloudflare, or other anti-bot protection. Check the site's terms and robots policy before
 collecting its content.
 
 Run the checks from the repository root:

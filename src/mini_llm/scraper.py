@@ -1,9 +1,8 @@
-"""Polite, single-page HTML scraper for collecting raw text documents."""
+"""Polite, sequential collector for public 2ch JSON API threads."""
 
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import random
 import re
@@ -14,74 +13,33 @@ from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 from pathlib import Path
 from types import TracebackType
-from urllib.parse import unquote, urlparse
+from typing import Self, cast
+from urllib.parse import urlparse
 
 import requests
-from bs4 import BeautifulSoup, Comment, Tag
+from bs4 import BeautifulSoup, Tag
 
+TWO_CH_BASE_URL = "https://2ch.org"
+TWO_CH_HOSTS = frozenset({"2ch.org", "www.2ch.org"})
 USER_AGENT = (
     "mini-llm-data-collector/0.1 "
-    "(educational single-page scraper; +https://github.com/nktrudik/llm_from_scratch)"
+    "(educational sequential collector; +https://github.com/nktrudik/llm_from_scratch)"
 )
 RETRYABLE_STATUS_CODES = frozenset({429, 500, 502, 503, 504})
-REMOVABLE_TAGS = (
-    "script",
-    "style",
-    "nav",
-    "footer",
-    "header",
-    "form",
-    "aside",
-    "noscript",
-    "iframe",
-    "svg",
-    "canvas",
-    "dialog",
-)
-BLOCK_TAGS = ("h1", "h2", "h3", "h4", "h5", "h6", "p", "li", "blockquote")
-BOILERPLATE_TOKENS = frozenset(
-    {
-        "ad",
-        "ads",
-        "advert",
-        "advertisement",
-        "banner",
-        "breadcrumb",
-        "cookie",
-        "footer",
-        "header",
-        "menu",
-        "modal",
-        "nav",
-        "navigation",
-        "newsletter",
-        "popup",
-        "promo",
-        "share",
-        "sidebar",
-        "social",
-        "subscribe",
-    }
-)
-BOILERPLATE_ROLES = frozenset({"banner", "contentinfo", "dialog", "navigation"})
-TWO_CH_HOSTS = frozenset({"2ch.org", "www.2ch.org"})
+THREAD_PATH_PATTERN = re.compile(r"^/(?P<board>[a-zA-Z0-9]+)/res/(?P<thread_id>\d+)\.html/?$")
+BOARD_PATH_PATTERN = re.compile(r"^/(?P<board>[a-zA-Z0-9]+)/?$")
+REFERENCE_PATTERN = re.compile(r">>(\d+)")
 
 
 class ScraperError(RuntimeError):
-    """Base error raised for expected scraping failures."""
-
-
-class ExtractionError(ScraperError):
-    """Raised when a page does not contain enough useful text."""
+    """Error raised for an expected request, URL, or API schema failure."""
 
 
 @dataclass(frozen=True, slots=True)
 class ScraperConfig:
-    """Network, extraction, and output settings for a scraping run."""
+    """Network and output settings for a collection run."""
 
     output_dir: Path = Path("data/raw")
-    min_text_length: int = 200
-    min_block_length: int = 40
     timeout_seconds: float = 15.0
     max_retries: int = 2
     backoff_factor: float = 1.0
@@ -89,10 +47,6 @@ class ScraperConfig:
     max_request_delay: float = 2.5
 
     def __post_init__(self) -> None:
-        if self.min_text_length <= 0:
-            raise ValueError("min_text_length must be positive")
-        if self.min_block_length <= 0:
-            raise ValueError("min_block_length must be positive")
         if self.timeout_seconds <= 0:
             raise ValueError("timeout_seconds must be positive")
         if self.max_retries < 0:
@@ -104,206 +58,201 @@ class ScraperConfig:
 
 
 @dataclass(frozen=True, slots=True)
-class ScrapedDocument:
-    """Serializable text extracted from one source page."""
+class TwoChTarget:
+    """Parsed board URL with an optional concrete thread ID."""
 
-    source_url: str
-    title: str
+    board: str
+    thread_id: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class PostRecord:
+    """Text-only representation of one non-empty 2ch post."""
+
+    post_id: int
     text: str
-    fetched_at: str
+    references: tuple[str, ...]
 
-    def to_dict(self) -> dict[str, str]:
-        """Return the JSON-compatible document representation."""
+    def to_dict(self) -> dict[str, object]:
+        """Return the JSON-compatible post representation."""
 
         return {
-            "source_url": self.source_url,
-            "title": self.title,
+            "post_id": self.post_id,
             "text": self.text,
-            "fetched_at": self.fetched_at,
+            "references": list(self.references),
         }
 
 
-def normalize_text(value: str) -> str:
-    """Collapse HTML whitespace into readable single spaces."""
+@dataclass(frozen=True, slots=True)
+class ThreadDocument:
+    """Text-only thread collected from the 2ch JSON API."""
 
-    return re.sub(r"\s+", " ", value).strip()
+    board: str
+    thread_id: int
+    source_url: str
+    api_url: str
+    title: str
+    fetched_at: str
+    posts: tuple[PostRecord, ...]
 
+    def to_dict(self) -> dict[str, object]:
+        """Return the JSON-compatible thread representation."""
 
-def _remove_boilerplate(soup: BeautifulSoup) -> None:
-    for element in soup.find_all(REMOVABLE_TAGS):
-        if isinstance(element, Tag):
-            element.decompose()
-
-    for node in soup.find_all(string=True):
-        if isinstance(node, Comment):
-            node.extract()
-
-    for element in list(soup.find_all(True)):
-        if not isinstance(element, Tag) or element.parent is None:
-            continue
-        role = str(element.get("role", "")).lower()
-        if role in BOILERPLATE_ROLES or element.has_attr("hidden"):
-            element.decompose()
-            continue
-        if str(element.get("aria-hidden", "")).lower() == "true":
-            element.decompose()
-            continue
-
-        identifiers = [str(element.get("id", ""))]
-        classes = element.get("class", [])
-        if isinstance(classes, list):
-            identifiers.extend(str(class_name) for class_name in classes)
-        identity_tokens = set(re.findall(r"[a-z0-9]+", " ".join(identifiers).lower()))
-        if identity_tokens & BOILERPLATE_TOKENS:
-            element.decompose()
+        return {
+            "board": self.board,
+            "thread_id": self.thread_id,
+            "source_url": self.source_url,
+            "api_url": self.api_url,
+            "title": self.title,
+            "fetched_at": self.fetched_at,
+            "posts": [post.to_dict() for post in self.posts],
+        }
 
 
-def _content_score(element: Tag) -> int:
-    text_length = len(normalize_text(element.get_text(" ", strip=True)))
-    link_length = sum(
-        len(normalize_text(link.get_text(" ", strip=True)))
-        for link in element.find_all("a")
-        if isinstance(link, Tag)
-    )
-    return max(0, text_length - 2 * link_length)
+def parse_two_ch_url(url: str) -> TwoChTarget:
+    """Parse a supported 2ch board or thread URL."""
 
+    parsed_url = urlparse(url)
+    if parsed_url.scheme not in {"http", "https"} or parsed_url.hostname not in TWO_CH_HOSTS:
+        raise ScraperError("URL must point to a public board or thread on 2ch.org")
 
-def _outermost(elements: Sequence[Tag], tag_name: str) -> list[Tag]:
-    return [
-        element
-        for element in elements
-        if not any(
-            isinstance(parent, Tag) and parent.name == tag_name for parent in element.parents
+    thread_match = THREAD_PATH_PATTERN.fullmatch(parsed_url.path)
+    if thread_match:
+        return TwoChTarget(
+            board=thread_match.group("board").lower(),
+            thread_id=int(thread_match.group("thread_id")),
         )
-    ]
+
+    board_match = BOARD_PATH_PATTERN.fullmatch(parsed_url.path)
+    if board_match:
+        return TwoChTarget(board=board_match.group("board").lower())
+
+    raise ScraperError(
+        "Expected a board URL like https://2ch.org/b/ or a thread URL like "
+        "https://2ch.org/b/res/123.html"
+    )
 
 
-def _find_named_roots(soup: BeautifulSoup, tag_name: str, minimum_score: int) -> list[Tag]:
-    candidates = [
-        element
-        for element in soup.find_all(tag_name)
-        if isinstance(element, Tag) and _content_score(element) >= minimum_score
-    ]
-    return _outermost(candidates, tag_name)
-
-
-def _find_heuristic_root(soup: BeautifulSoup, minimum_score: int) -> list[Tag]:
-    candidates = [
-        element
-        for element in soup.find_all(("section", "div"))
-        if isinstance(element, Tag) and _content_score(element) >= minimum_score
-    ]
-    if not candidates:
-        return []
-    return [max(candidates, key=_content_score)]
-
-
-def _find_two_ch_post_roots(soup: BeautifulSoup) -> list[Tag]:
-    """Return message bodies from the current public 2ch.org thread layout."""
-
-    return [
-        element for element in soup.select("main .post .post__message") if isinstance(element, Tag)
-    ]
-
-
-def _minimum_length_for(element: Tag, minimum_block_length: int) -> int:
-    if element.name in {"h1", "h2", "h3", "h4", "h5", "h6"}:
-        return max(4, minimum_block_length // 4)
-    if element.name == "li":
-        return max(20, minimum_block_length // 2)
-    return minimum_block_length
-
-
-def _collect_blocks(roots: Sequence[Tag], minimum_block_length: int) -> str:
-    blocks: list[str] = []
-    seen: set[str] = set()
-
-    for root in roots:
-        found_block = False
-        for element in root.find_all(BLOCK_TAGS):
-            if not isinstance(element, Tag):
-                continue
-            if element.name in {"li", "blockquote"} and element.find(BLOCK_TAGS):
-                continue
-
-            text = normalize_text(element.get_text(" ", strip=True))
-            if len(text) < _minimum_length_for(element, minimum_block_length):
-                continue
-            normalized_key = text.casefold()
-            if normalized_key in seen:
-                continue
-            seen.add(normalized_key)
-            blocks.append(text)
-            found_block = True
-
-        if not found_block:
-            fallback_text = normalize_text(root.get_text(" ", strip=True))
-            normalized_key = fallback_text.casefold()
-            if len(fallback_text) >= minimum_block_length and normalized_key not in seen:
-                seen.add(normalized_key)
-                blocks.append(fallback_text)
-
-    return "\n\n".join(blocks)
-
-
-def extract_document(
-    html: str,
-    source_url: str,
-    *,
-    min_text_length: int = 200,
-    min_block_length: int = 40,
-) -> ScrapedDocument:
-    """Extract a title and deduplicated useful text from an HTML document."""
-
-    if min_text_length <= 0 or min_block_length <= 0:
-        raise ValueError("minimum text lengths must be positive")
+def clean_post_text(html: str) -> str:
+    """Convert the HTML fragment in an API comment into readable plain text."""
 
     soup = BeautifulSoup(html, "html.parser")
-    title_element = soup.find("title")
-    title = (
-        normalize_text(title_element.get_text(" ", strip=True))
-        if isinstance(title_element, Tag)
-        else ""
-    )
-    _remove_boilerplate(soup)
-    if not title:
-        heading = soup.find("h1")
-        if isinstance(heading, Tag):
-            title = normalize_text(heading.get_text(" ", strip=True))
+    for element in soup.find_all(("script", "style")):
+        if isinstance(element, Tag):
+            element.decompose()
+    for line_break in soup.find_all("br"):
+        if isinstance(line_break, Tag):
+            line_break.replace_with("\n")
 
-    root_groups: list[tuple[list[Tag], int]] = []
-    if (urlparse(source_url).hostname or "").lower() in TWO_CH_HOSTS:
-        two_ch_block_length = max(10, min_block_length // 2)
-        root_groups.append((_find_two_ch_post_roots(soup), two_ch_block_length))
+    raw_text = soup.get_text(" ", strip=False)
+    lines = [re.sub(r"\s+", " ", line).strip() for line in raw_text.splitlines()]
+    return "\n".join(line for line in lines if line)
 
-    root_groups.extend(
-        [
-            (_find_named_roots(soup, "article", min_block_length), min_block_length),
-            (_find_named_roots(soup, "main", min_block_length), min_block_length),
-            (_find_heuristic_root(soup, min_block_length), min_block_length),
-        ]
-    )
-    if isinstance(soup.body, Tag):
-        root_groups.append(([soup.body], min_block_length))
 
-    longest_text = ""
-    for roots, block_length in root_groups:
-        if not roots:
+def extract_references(text: str) -> tuple[str, ...]:
+    """Return unique post references in their original ``>>123`` form."""
+
+    return tuple(dict.fromkeys(f">>{post_id}" for post_id in REFERENCE_PATTERN.findall(text)))
+
+
+def _require_object(value: object, context: str) -> dict[str, object]:
+    if not isinstance(value, dict) or not all(isinstance(key, str) for key in value):
+        raise ScraperError(f"Invalid 2ch API response: {context} must be an object")
+    return cast(dict[str, object], value)
+
+
+def _require_list(value: object, context: str) -> list[object]:
+    if not isinstance(value, list):
+        raise ScraperError(f"Invalid 2ch API response: {context} must be a list")
+    return cast(list[object], value)
+
+
+def _require_integer(value: object, context: str) -> int:
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise ScraperError(f"Invalid 2ch API response: {context} must be an integer")
+    return value
+
+
+def parse_catalog_thread_ids(payload: object, max_threads: int | None = None) -> list[int]:
+    """Extract ordered thread IDs from a board catalog API response."""
+
+    if max_threads is not None and max_threads <= 0:
+        raise ValueError("max_threads must be positive when provided")
+
+    root = _require_object(payload, "catalog root")
+    raw_threads = _require_list(root.get("threads"), "threads")
+    thread_ids: list[int] = []
+    seen: set[int] = set()
+    for index, raw_thread in enumerate(raw_threads):
+        thread = _require_object(raw_thread, f"threads[{index}]")
+        thread_id = _require_integer(thread.get("num"), f"threads[{index}].num")
+        if thread_id in seen:
             continue
-        text = _collect_blocks(roots, block_length)
-        if len(text) > len(longest_text):
-            longest_text = text
-        if len(text) >= min_text_length:
-            return ScrapedDocument(
-                source_url=source_url,
-                title=title,
-                text=text,
-                fetched_at=datetime.now(UTC).isoformat(),
-            )
+        seen.add(thread_id)
+        thread_ids.append(thread_id)
+        if max_threads is not None and len(thread_ids) >= max_threads:
+            break
 
-    raise ExtractionError(
-        f"Extracted text is too short: {len(longest_text)} characters (minimum: {min_text_length})"
+    return thread_ids
+
+
+def parse_thread_document(payload: object, board: str, thread_id: int) -> ThreadDocument:
+    """Create a text-only thread document from a 2ch API response."""
+
+    root = _require_object(payload, "thread root")
+    raw_threads = _require_list(root.get("threads"), "threads")
+    if not raw_threads:
+        raise ScraperError("Invalid 2ch API response: thread list is empty")
+    thread = _require_object(raw_threads[0], "threads[0]")
+    raw_posts = _require_list(thread.get("posts"), "threads[0].posts")
+
+    posts: list[PostRecord] = []
+    title = str(root.get("title", "")).strip()
+    for index, raw_post in enumerate(raw_posts):
+        post = _require_object(raw_post, f"posts[{index}]")
+        raw_comment = post.get("comment")
+        if not isinstance(raw_comment, str):
+            continue
+        text = clean_post_text(raw_comment)
+        if not text:
+            continue
+
+        post_id = _require_integer(post.get("num"), f"posts[{index}].num")
+        posts.append(
+            PostRecord(
+                post_id=post_id,
+                text=text,
+                references=extract_references(text),
+            )
+        )
+        subject = post.get("subject")
+        if len(posts) == 1 and isinstance(subject, str) and subject.strip():
+            title = clean_post_text(subject)
+
+    source_url = f"{TWO_CH_BASE_URL}/{board}/res/{thread_id}.html"
+    api_url = f"{TWO_CH_BASE_URL}/{board}/res/{thread_id}.json"
+    return ThreadDocument(
+        board=board,
+        thread_id=thread_id,
+        source_url=source_url,
+        api_url=api_url,
+        title=title,
+        fetched_at=datetime.now(UTC).isoformat(),
+        posts=tuple(posts),
     )
+
+
+def save_thread_document(document: ThreadDocument, output_dir: Path) -> Path:
+    """Save one thread under ``data/raw/2ch/<board>/<thread_id>.json``."""
+
+    board_dir = output_dir / "2ch" / document.board
+    board_dir.mkdir(parents=True, exist_ok=True)
+    output_path = board_dir / f"{document.thread_id}.json"
+    output_path.write_text(
+        json.dumps(document.to_dict(), ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    return output_path
 
 
 def _retry_after_seconds(value: str | None) -> float | None:
@@ -321,45 +270,16 @@ def _retry_after_seconds(value: str | None) -> float | None:
         return max(0.0, (retry_at - datetime.now(UTC)).total_seconds())
 
 
-def _validate_url(url: str) -> None:
-    parsed_url = urlparse(url)
-    if parsed_url.scheme not in {"http", "https"} or not parsed_url.netloc:
-        raise ScraperError("URL must be an absolute http:// or https:// address")
-
-
-def _output_filename(url: str) -> str:
-    parsed_url = urlparse(url)
-    readable_part = unquote(f"{parsed_url.hostname or 'page'}{parsed_url.path}")
-    slug = re.sub(r"[^a-zA-Z0-9]+", "-", readable_part).strip("-").lower()
-    slug = slug[:80] or "page"
-    digest = hashlib.sha256(url.encode("utf-8")).hexdigest()[:10]
-    return f"{slug}-{digest}.json"
-
-
-def save_document(document: ScrapedDocument, output_dir: Path) -> Path:
-    """Save a scraped document as UTF-8 JSON and return its path."""
-
-    output_dir.mkdir(parents=True, exist_ok=True)
-    output_path = output_dir / _output_filename(document.source_url)
-    output_path.write_text(
-        json.dumps(document.to_dict(), ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-    )
-    return output_path
-
-
-class WebScraper:
-    """Sequential HTML scraper backed by one reusable requests session."""
+class TwoChScraper:
+    """Sequential 2ch JSON API client backed by one reusable session."""
 
     def __init__(self, config: ScraperConfig | None = None) -> None:
         self.config = config or ScraperConfig()
         self.session = requests.Session()
-        self.session.headers.update(
-            {"User-Agent": USER_AGENT, "Accept": "text/html,application/xhtml+xml"}
-        )
+        self.session.headers.update({"User-Agent": USER_AGENT, "Accept": "application/json"})
         self._last_request_finished_at: float | None = None
 
-    def __enter__(self) -> WebScraper:
+    def __enter__(self) -> Self:
         return self
 
     def __exit__(
@@ -390,10 +310,9 @@ class WebScraper:
         if wait_seconds > 0:
             time.sleep(wait_seconds)
 
-    def fetch_html(self, url: str) -> str:
-        """Download one HTML page with bounded retries and polite delays."""
+    def fetch_json(self, url: str) -> object:
+        """Fetch one JSON endpoint with bounded retries and polite delays."""
 
-        _validate_url(url)
         next_wait = 0.0
         last_error: requests.RequestException | None = None
 
@@ -429,65 +348,76 @@ class WebScraper:
                 raise ScraperError(f"HTTP request failed for {url}: {error}") from error
 
             content_type = response.headers.get("Content-Type", "").lower()
-            if content_type and "html" not in content_type and "xhtml" not in content_type:
-                raise ScraperError(f"URL did not return HTML content: {content_type}")
-            response.encoding = response.apparent_encoding or response.encoding
-            return response.text
+            if content_type and "json" not in content_type:
+                raise ScraperError(f"API endpoint did not return JSON: {content_type}")
+            try:
+                return cast(object, response.json())
+            except ValueError as error:
+                raise ScraperError(f"API endpoint returned invalid JSON: {url}") from error
 
         raise ScraperError(f"Request failed after bounded retries: {url}") from last_error
 
-    def scrape(self, url: str) -> ScrapedDocument:
-        """Download and extract one document without saving it."""
+    def scrape_thread(self, board: str, thread_id: int) -> ThreadDocument:
+        """Download and parse one complete thread."""
 
-        html = self.fetch_html(url)
-        return extract_document(
-            html,
-            url,
-            min_text_length=self.config.min_text_length,
-            min_block_length=self.config.min_block_length,
-        )
+        api_url = f"{TWO_CH_BASE_URL}/{board}/res/{thread_id}.json"
+        return parse_thread_document(self.fetch_json(api_url), board, thread_id)
 
-    def scrape_to_file(self, url: str) -> Path:
-        """Download, extract, and save one document to the configured raw-data directory."""
+    def scrape_to_files(self, url: str, *, max_threads: int | None = None) -> list[Path]:
+        """Collect one thread or all selected current threads from a board URL."""
 
-        return save_document(self.scrape(url), self.config.output_dir)
+        target = parse_two_ch_url(url)
+        if max_threads is not None and max_threads <= 0:
+            raise ValueError("max_threads must be positive when provided")
+
+        if target.thread_id is not None:
+            thread_ids = [target.thread_id]
+        else:
+            catalog_url = f"{TWO_CH_BASE_URL}/{target.board}/catalog.json"
+            catalog = self.fetch_json(catalog_url)
+            thread_ids = parse_catalog_thread_ids(catalog, max_threads)
+
+        output_paths: list[Path] = []
+        for thread_id in thread_ids:
+            document = self.scrape_thread(target.board, thread_id)
+            output_paths.append(save_thread_document(document, self.config.output_dir))
+        return output_paths
 
 
 def build_argument_parser() -> argparse.ArgumentParser:
     """Build the command-line argument parser."""
 
-    parser = argparse.ArgumentParser(description="Extract useful text from one ordinary HTML page.")
-    parser.add_argument("url", help="Absolute http:// or https:// page URL")
+    parser = argparse.ArgumentParser(description="Collect text-only threads from the 2ch JSON API.")
+    parser.add_argument("url", help="2ch board URL or concrete thread URL")
     parser.add_argument(
         "--output-dir",
         type=Path,
         default=Path("data/raw"),
-        help="Directory for the resulting JSON file (default: data/raw)",
+        help="Raw-data root directory (default: data/raw)",
     )
-    parser.add_argument("--min-text-length", type=int, default=200)
-    parser.add_argument("--min-block-length", type=int, default=40)
+    parser.add_argument(
+        "--max-threads",
+        type=int,
+        default=None,
+        help="Maximum threads to collect from a board URL",
+    )
     parser.add_argument("--timeout", type=float, default=15.0, help="Request timeout in seconds")
     return parser
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    """Run the single-page scraper CLI."""
+    """Run the 2ch JSON collector CLI."""
 
     args = build_argument_parser().parse_args(argv)
     try:
-        config = ScraperConfig(
-            output_dir=args.output_dir,
-            min_text_length=args.min_text_length,
-            min_block_length=args.min_block_length,
-            timeout_seconds=args.timeout,
-        )
-        with WebScraper(config) as scraper:
-            output_path = scraper.scrape_to_file(args.url)
+        config = ScraperConfig(output_dir=args.output_dir, timeout_seconds=args.timeout)
+        with TwoChScraper(config) as scraper:
+            output_paths = scraper.scrape_to_files(args.url, max_threads=args.max_threads)
     except (ScraperError, ValueError) as error:
         print(f"Scraping failed: {error}")
         return 1
 
-    print(f"Saved extracted document to {output_path}")
+    print(f"Saved {len(output_paths)} thread(s) under {config.output_dir / '2ch'}")
     return 0
 
 
