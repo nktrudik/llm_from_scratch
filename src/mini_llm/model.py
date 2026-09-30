@@ -1,4 +1,4 @@
-"""PyTorch modules for a compact decoder-only Transformer."""
+"""PyTorch-модули компактного decoder-only Transformer."""
 
 import math
 from typing import cast, overload
@@ -11,7 +11,7 @@ from mini_llm.config import ModelConfig
 
 
 class CausalSelfAttention(nn.Module):
-    """Multi-head self-attention with a fixed causal visibility mask."""
+    """Multi-head self-attention с фиксированной причинной маской видимости."""
 
     def __init__(self, config: ModelConfig) -> None:
         super().__init__()
@@ -61,7 +61,7 @@ class CausalSelfAttention(nn.Module):
 
 
 class MLP(nn.Module):
-    """Position-wise feed-forward network used in each Transformer block."""
+    """Позиционная feed-forward сеть каждого Transformer-блока."""
 
     def __init__(self, config: ModelConfig) -> None:
         super().__init__()
@@ -77,7 +77,7 @@ class MLP(nn.Module):
 
 
 class TransformerBlock(nn.Module):
-    """Pre-normalized decoder block with attention and MLP residual paths."""
+    """Decoder-блок с pre-norm, attention и остаточными путями MLP."""
 
     def __init__(self, config: ModelConfig) -> None:
         super().__init__()
@@ -94,7 +94,7 @@ class TransformerBlock(nn.Module):
 
 
 class DecoderOnlyTransformer(nn.Module):
-    """Compact decoder-only language model operating on token IDs."""
+    """Компактная decoder-only языковая модель, работающая с token IDs."""
 
     def __init__(self, config: ModelConfig) -> None:
         super().__init__()
@@ -121,7 +121,7 @@ class DecoderOnlyTransformer(nn.Module):
             nn.init.zeros_(module.bias)
 
     def num_parameters(self, *, trainable_only: bool = True) -> int:
-        """Return the number of unique model parameters."""
+        """Вернуть число уникальных параметров модели."""
 
         parameters = self.parameters()
         if trainable_only:
@@ -137,7 +137,7 @@ class DecoderOnlyTransformer(nn.Module):
     def forward(
         self, input_ids: Tensor, targets: Tensor | None = None
     ) -> Tensor | tuple[Tensor, Tensor]:
-        """Compute token logits and, when targets are supplied, cross-entropy loss."""
+        """Посчитать logits токенов и cross-entropy loss при наличии targets."""
 
         if input_ids.ndim != 2:
             raise ValueError("input_ids must have shape [batch, sequence_length]")
@@ -180,7 +180,7 @@ class DecoderOnlyTransformer(nn.Module):
         temperature: float = 1.0,
         top_k: int | None = None,
     ) -> Tensor:
-        """Autoregressively append sampled token IDs to a prompt."""
+        """Авторегрессионно добавить сэмплированные token IDs к prompt."""
 
         if input_ids.ndim != 2 or input_ids.size(1) == 0:
             raise ValueError("input_ids must have shape [batch, sequence_length] with a prompt")

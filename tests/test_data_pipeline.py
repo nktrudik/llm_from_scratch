@@ -21,13 +21,13 @@ from mini_llm.model import DecoderOnlyTransformer
 MAX_LENGTH = 40
 
 
-def test_batch_size_is_limited_to_four() -> None:
+def test_batch_size_uses_shared_limit() -> None:
     assert DataLoaderConfig(batch_size=1).batch_size == 1
-    assert DataLoaderConfig(batch_size=4).batch_size == 4
-    with pytest.raises(ValueError, match="от 1 до 4"):
+    assert DataLoaderConfig(batch_size=8).batch_size == 8
+    with pytest.raises(ValueError, match="от 1 до 8"):
         DataLoaderConfig(batch_size=0)
-    with pytest.raises(ValueError, match="от 1 до 4"):
-        DataLoaderConfig(batch_size=5)
+    with pytest.raises(ValueError, match="от 1 до 8"):
+        DataLoaderConfig(batch_size=9)
 
 
 def _sample(thread_id: int, context: list[str], response: str) -> dict[str, object]:

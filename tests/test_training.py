@@ -9,7 +9,7 @@ from torch.optim import AdamW
 from mini_llm.config import ModelConfig
 from mini_llm.model import DecoderOnlyTransformer
 from mini_llm.overfit_test import OverfitConfig
-from mini_llm.training import TrainingConfig, build_argument_parser
+from mini_llm.training import TrainingConfig
 from mini_llm.training_checkpoint import TrainingState, load_checkpoint, save_checkpoint
 from mini_llm.training_progress import calculate_training_plan, format_training_progress
 
@@ -25,14 +25,14 @@ def _small_config() -> ModelConfig:
     )
 
 
-def test_training_batch_size_is_limited_to_four() -> None:
-    assert TrainingConfig().batch_size == 4
+def test_training_batch_size_uses_shared_limit() -> None:
+    assert TrainingConfig().batch_size == 8
     assert TrainingConfig().validation_interval == 1000
     assert TrainingConfig().validation_batches >= 200
     assert TrainingConfig(batch_size=1).batch_size == 1
-    assert TrainingConfig(batch_size=4).batch_size == 4
-    with pytest.raises(ValueError, match="от 1 до 4"):
-        TrainingConfig(batch_size=5)
+    assert TrainingConfig(batch_size=8).batch_size == 8
+    with pytest.raises(ValueError, match="от 1 до 8"):
+        TrainingConfig(batch_size=9)
     with pytest.raises(ValueError, match="от 1 до 4"):
         OverfitConfig(batch_size=5)
 
@@ -50,8 +50,6 @@ def test_training_plan_uses_complete_epochs_or_explicit_step_mode() -> None:
 
     with pytest.raises(ValueError, match="ровно один режим"):
         TrainingConfig(epochs=3, max_steps=7)
-    with pytest.raises(SystemExit):
-        build_argument_parser().parse_args(["--epochs", "3", "--max-steps", "7"])
 
 
 def test_training_progress_contains_seen_counts_and_epoch_percentage() -> None:

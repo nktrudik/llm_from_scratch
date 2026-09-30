@@ -1,4 +1,4 @@
-"""Conservative exact and near-copy detection for processed text."""
+"""Консервативный поиск точных и почти точных копий обработанного текста."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ WORD_PATTERN = re.compile(r"\w+", re.UNICODE)
 
 
 def canonicalize_for_deduplication(text: str) -> str:
-    """Normalize surface differences without changing the stored source text."""
+    """Нормализовать поверхностные различия, не меняя сохраняемый исходный текст."""
 
     normalized = unicodedata.normalize("NFKC", text).casefold()
     return " ".join(WORD_PATTERN.findall(normalized))
@@ -40,7 +40,7 @@ class _NearDuplicateEntry:
 
 
 class ContentDeduplicator:
-    """Detect real copies while leaving short, ordinary responses untouched."""
+    """Находить реальные копии, не затрагивая обычные короткие ответы."""
 
     def __init__(self, *, minimum_characters: int = 80, similarity_threshold: float = 0.9) -> None:
         if minimum_characters <= 0:
@@ -54,7 +54,7 @@ class ContentDeduplicator:
         self._anchor_buckets: dict[int, list[int]] = {}
 
     def classify(self, text: str) -> DeduplicationResult:
-        """Classify and remember a unique long-enough text."""
+        """Классифицировать и запомнить достаточно длинный уникальный текст."""
 
         canonical_text = canonicalize_for_deduplication(text)
         if len(canonical_text) < self.minimum_characters:

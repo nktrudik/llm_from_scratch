@@ -1,4 +1,4 @@
-"""Tests for dialogue preprocessing and content deduplication."""
+"""Тесты preprocessing диалогов и дедупликации содержимого."""
 
 import json
 from pathlib import Path

@@ -20,7 +20,7 @@ from mini_llm.bpe_tokenizer import (
     BPETokenizer,
     OversizedResponseError,
 )
-from mini_llm.config import DEFAULT_MAX_SEQUENCE_LENGTH, ModelConfig
+from mini_llm.config import DEFAULT_MAX_SEQUENCE_LENGTH, MAX_TRAINING_BATCH_SIZE, ModelConfig
 from mini_llm.dataset_split import SPLIT_NAMES
 from mini_llm.dialogue_format import (
     PAD_TOKEN,
@@ -48,14 +48,16 @@ class CausalLMBatch(TypedDict):
 class DataLoaderConfig:
     """Минимальные настройки batching и воспроизводимого shuffle."""
 
-    batch_size: int = 4
+    batch_size: int = MAX_TRAINING_BATCH_SIZE
     num_workers: int = 0
     random_seed: int = 42
     pin_memory: bool = False
 
     def __post_init__(self) -> None:
-        if not 1 <= self.batch_size <= 4:
-            raise ValueError("batch_size должен быть в диапазоне от 1 до 4")
+        if not 1 <= self.batch_size <= MAX_TRAINING_BATCH_SIZE:
+            raise ValueError(
+                f"batch_size должен быть в диапазоне от 1 до {MAX_TRAINING_BATCH_SIZE}"
+            )
         if self.num_workers < 0:
             raise ValueError("num_workers не может быть отрицательным")
 
@@ -222,7 +224,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument("--split", choices=SPLIT_NAMES, default="train")
     parser.add_argument("--splits-dir", type=Path, default=Path("data/processed/splits"))
     parser.add_argument("--tokenizer-file", type=Path, default=DEFAULT_TOKENIZER_PATH)
-    parser.add_argument("--batch-size", type=int, default=4)
+    parser.add_argument("--batch-size", type=int, default=MAX_TRAINING_BATCH_SIZE)
     parser.add_argument("--num-workers", type=int, default=0)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--max-samples", type=int, default=8)

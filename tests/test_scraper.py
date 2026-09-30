@@ -1,4 +1,4 @@
-"""Tests for collecting text-only threads from the 2ch JSON API."""
+"""Тесты сбора текстовых тредов через JSON API 2ch."""
 
 import json
 from pathlib import Path
@@ -19,7 +19,7 @@ from mini_llm.scraper import (
 
 
 def thread_payload(thread_id: int, text: str = "Текст поста") -> dict[str, object]:
-    """Return a minimal API response for one thread."""
+    """Вернуть минимальный ответ API для одного треда."""
 
     return {
         "title": "Название доски",
@@ -99,7 +99,7 @@ def test_catalog_preserves_order_deduplicates_and_applies_limit() -> None:
 
 
 class StubTwoChScraper(TwoChScraper):
-    """Network-free scraper returning predefined endpoint payloads."""
+    """Scraper без сети, возвращающий заранее заданные ответы endpoints."""
 
     def __init__(self, config: ScraperConfig, responses: dict[str, object]) -> None:
         super().__init__(config)

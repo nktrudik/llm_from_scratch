@@ -1,4 +1,4 @@
-"""Tests for the decoder-only Transformer architecture."""
+"""Тесты архитектуры decoder-only Transformer."""
 
 import torch
 
@@ -6,7 +6,7 @@ from mini_llm import DecoderOnlyTransformer, ModelConfig
 
 
 def small_config() -> ModelConfig:
-    """Return a fast configuration for behavioral tests."""
+    """Вернуть компактную конфигурацию для быстрых поведенческих тестов."""
 
     return ModelConfig(
         vocab_size=64,

@@ -1,13 +1,14 @@
-"""Configuration for the decoder-only Transformer."""
+"""Конфигурация компактного decoder-only Transformer."""
 
 from dataclasses import dataclass
 
 DEFAULT_MAX_SEQUENCE_LENGTH = 1024
+MAX_TRAINING_BATCH_SIZE = 8
 
 
 @dataclass(frozen=True, slots=True)
 class ModelConfig:
-    """Hyperparameters and special token IDs for the model architecture."""
+    """Гиперпараметры архитектуры и идентификаторы специальных токенов."""
 
     vocab_size: int = 8192
     max_sequence_length: int = DEFAULT_MAX_SEQUENCE_LENGTH
@@ -58,6 +59,6 @@ class ModelConfig:
 
     @property
     def ffn_size(self) -> int:
-        """Return the hidden width of the feed-forward network."""
+        """Вернуть ширину скрытого слоя feed-forward сети."""
 
         return self.ffn_multiplier * self.d_model

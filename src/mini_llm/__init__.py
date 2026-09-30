@@ -1,4 +1,4 @@
-"""Public package interface for the compact language model."""
+"""Публичный интерфейс компактной языковой модели."""
 
 from mini_llm.config import ModelConfig
 from mini_llm.model import DecoderOnlyTransformer

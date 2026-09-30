@@ -3,11 +3,12 @@
 Учебный проект компактной decoder-only Transformer-модели на PyTorch и последовательного
 pipeline подготовки текстовых диалогов из тредов 2ch. Репозиторий содержит сборщик JSON API,
 preprocessing графа ответов, разбиение датасета по тредам, обучение собственного byte-level BPE
-tokenizer, расчёт token statistics и однопроцессное обучение модели на CUDA.
+tokenizer, расчёт token statistics, однопроцессное обучение модели на CUDA и локальный FastAPI
+для ручного запуска этапов.
 
-В проекте пока нет distributed training, scheduler, production model evaluation и текстового
-интерфейса. Код обучения реализован, но сама модель в репозитории не обучена и не умеет осмысленно
-отвечать.
+В проекте пока нет distributed training, scheduler, production model evaluation и пользовательского
+веб-интерфейса. Код обучения и HTTP-генерации реализован, но сама модель в репозитории не обучена и
+не умеет осмысленно отвечать без подходящего checkpoint.
 
 ## Установка и VS Code
 
@@ -69,8 +70,10 @@ logits, а с `targets` — `(logits, loss)`. Метод `generate()` работ
 src/mini_llm/
 ├── config.py                # конфигурация модели и special token IDs
 ├── model.py                 # attention, MLP, Transformer-блок и модель
-├── scraper.py               # сбор тредов через JSON API 2ch
-├── preprocessing.py         # reply graph и dialogue samples
+├── api/                     # HTTP routes, схемы, сервисы и реестр фоновых jobs
+├── training/                # config, schemas, monitoring, checkpoints и training pipeline
+├── scraper/                 # схемы, parsing, storage и HTTP-клиент 2ch
+├── preprocessing/           # схемы, очистка, reply graph и pipeline
 ├── preprocessing_stats.py   # статистика preprocessing
 ├── deduplication.py         # точные и консервативные near-duplicates
 ├── dialogue_format.py       # схема JSONL и role-token serialization
@@ -79,14 +82,37 @@ src/mini_llm/
 ├── token_statistics.py      # raw/effective token statistics
 ├── data_pipeline.py         # PyTorch Dataset, padding и DataLoader
 ├── overfit_test.py          # отдельный ручной sanity-check обучения
-├── training_checkpoint.py   # checkpoint serialization и resume state
-└── training.py              # CUDA/AMP training и validation
+├── inference.py             # загрузка checkpoint и текстовая генерация
+├── training_checkpoint.py   # совместимый импорт старого checkpoint API
+└── training_progress.py     # совместимый импорт старого progress API
 
 data/raw/2ch/<board>/         # неизменяемые raw JSON тредов
 data/processed/               # dialogue dataset, split и отчёты
 artifacts/tokenizer/          # обученный tokenizer JSON
 tests/                        # быстрые unit tests
 ```
+
+Файлы `training.py`, `preprocessing.py` и `scraper.py` заменены одноимёнными пакетами. Их публичные
+Python-импорты сохранены, но запуск долгих операций теперь сосредоточен в API. Ни один training
+pipeline не стартует при импорте модуля.
+
+## Локальный FastAPI
+
+Запуск из корня проекта, без `--workers` и без `--reload`:
+
+```powershell
+.\.venv\Scripts\uvicorn.exe mini_llm.api:app --host 127.0.0.1 --port 8000
+```
+
+Swagger UI доступен на `http://127.0.0.1:8000/docs`. Тяжёлые операции возвращают `job_id` и
+выполняются последовательно в фоне одного процесса. Проверить задачу:
+
+```powershell
+Invoke-RestMethod -Method Get -Uri "http://127.0.0.1:8000/v1/jobs/JOB_ID"
+```
+
+Это локальный учебный диспетчер, а не production-очередь: его jobs хранятся в RAM и теряются при
+перезапуске API. Checkpoints и результаты pipeline сохраняются на диск обычными модулями проекта.
 
 ## Сбор тредов 2ch
 
@@ -98,22 +124,25 @@ Scraper использует JSON API, не скачивает вложения 
 Один тред:
 
 ```powershell
-.\.venv\Scripts\python.exe -m mini_llm.scraper "https://2ch.org/b/res/THREAD_ID.html"
+$body = @{ url = "https://2ch.org/b/res/THREAD_ID.html" } | ConvertTo-Json
+Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:8000/v1/scraper" -ContentType "application/json" -Body $body
 ```
 
 Актуальные треды доски, не более десяти новых:
 
 ```powershell
-.\.venv\Scripts\python.exe -m mini_llm.scraper "https://2ch.org/b/" --max-threads 10
+$body = @{ url = "https://2ch.org/b/"; max_threads = 10 } | ConvertTo-Json
+Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:8000/v1/scraper" -ContentType "application/json" -Body $body
 ```
 
 Каждый тред сохраняется в `data/raw/2ch/<board>/<thread_id>.json`. Существующий raw-файл никогда
-не перезаписывается, а `--max-threads` учитывает только новые треды.
+не перезаписывается, а `max_threads` учитывает только новые треды.
 
 ## 1. Preprocessing
 
 ```powershell
-.\.venv\Scripts\python.exe -m mini_llm.preprocessing
+$body = @{} | ConvertTo-Json
+Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:8000/v1/preprocessing" -ContentType "application/json" -Body $body
 ```
 
 Этап читает `data/raw/2ch/<board>/*.json`, восстанавливает связи только по явным валидным
@@ -140,7 +169,8 @@ samples с `thread_root_fallback`.
 После завершения preprocessing:
 
 ```powershell
-.\.venv\Scripts\python.exe -m mini_llm.dataset_split
+$body = @{} | ConvertTo-Json
+Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:8000/v1/dataset/split" -ContentType "application/json" -Body $body
 ```
 
 Этап дважды потоково читает `data/processed/2ch_dialogues.jsonl`, детерминированно перемешивает
@@ -162,7 +192,8 @@ samples одного треда всегда находятся только в 
 Tokenizer обучается строго на `train.jsonl`:
 
 ```powershell
-.\.venv\Scripts\python.exe -m mini_llm.bpe_tokenizer
+$body = @{} | ConvertTo-Json
+Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:8000/v1/tokenizer/train" -ContentType "application/json" -Body $body
 ```
 
 Этап читает `data/processed/splits/train.jsonl`, обучает byte-level BPE с vocabulary size 8192 и
@@ -201,7 +232,8 @@ response сам не помещается, метод возвращает ош�
 После обучения tokenizer:
 
 ```powershell
-.\.venv\Scripts\python.exe -m mini_llm.token_statistics --max-sequence-length 1024
+$body = @{ max_sequence_length = 1024 } | ConvertTo-Json
+Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:8000/v1/statistics/tokens" -ContentType "application/json" -Body $body
 ```
 
 Этап читает три файла из `data/processed/splits/` и готовый
@@ -260,8 +292,9 @@ DecoderOnlyTransformer(input_ids, targets)
 `targets` сдвинуты на один token относительно `input_ids`. Collator дополняет обе последовательности
 справа через `<PAD>`; padded targets игнорируются существующим `cross_entropy`, поскольку модель
 использует `ignore_index=pad_token_id`. Train DataLoader включает deterministic shuffle,
-validation/test создаются без shuffle, последний неполный batch сохраняется. `batch_size` может
-быть только от 1 до 4; большее значение отклоняется до запуска.
+validation/test создаются без shuffle, последний неполный batch сохраняется. Общий предел
+`batch_size` задаётся в `config.py` и сейчас равен 8; для RTX 3050 4 GB в примерах обучения
+используется более консервативное значение 4.
 
 Быстрая проверка восьми пригодных train samples и одного CPU batch:
 
@@ -297,16 +330,28 @@ terminal progress, tokens/sec и GPU telemetry: имя GPU, allocated/reserved/p
 Во время обучения выводятся `samples_seen`, `tokens_seen`, процент текущей эпохи, текущий loss и
 rolling average loss по последним 100 шагам.
 
-Полное обучение с нуля на RTX 3050 4 GB и всём train split:
+Полное обучение с нуля на RTX 3050 4 GB и всём train split через API:
 
 ```powershell
-.\.venv\Scripts\python.exe -m mini_llm.training --device cuda --batch-size 4 --epochs 3 --learning-rate 0.0003 --validation-interval 1000 --validation-batches 200 --checkpoint-interval 1000 --log-interval 10 --num-workers 0
+$body = @{
+    device = "cuda"
+    batch_size = 4
+    epochs = 3
+    learning_rate = 0.0003
+    validation_interval = 1000
+    validation_batches = 200
+    checkpoint_interval = 1000
+    log_interval = 10
+    num_workers = 0
+} | ConvertTo-Json
+$job = Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:8000/v1/training" -ContentType "application/json" -Body $body
+$job
 ```
 
-`--epochs 3` означает ровно три полных прохода по train dataset. Альтернативный `--max-steps`
-нужен только для явно ограниченного запуска; CLI не позволяет одновременно передать оба аргумента,
-поэтому лимит шагов не может незаметно оборвать заданные эпохи. Значения по умолчанию:
-`batch_size=4`, validation каждые 1000 шагов и до 200 validation batches.
+`epochs = 3` означает ровно три полных прохода по train dataset. Альтернативный `max_steps` нужен
+только для явно ограниченного запуска; HTTP-схема не позволяет одновременно передать оба поля,
+поэтому лимит шагов не может незаметно оборвать заданные эпохи. По умолчанию validation выполняется
+каждые 1000 шагов и использует до 200 validation batches.
 
 Trainer создаёт в `checkpoints/training/`:
 
@@ -320,47 +365,78 @@ position, `samples_seen`, `tokens_seen`, окно последних loss, лу�
 последнего checkpoint до общего числа шести эпох:
 
 ```powershell
-.\.venv\Scripts\python.exe -m mini_llm.training --device cuda --resume-from checkpoints/training/last.pt --batch-size 4 --epochs 6 --learning-rate 0.0003 --validation-interval 1000 --validation-batches 200 --checkpoint-interval 1000 --log-interval 10 --num-workers 0
+$body = @{
+    device = "cuda"
+    resume_from = "checkpoints/training/last.pt"
+    batch_size = 4
+    epochs = 6
+    learning_rate = 0.0003
+} | ConvertTo-Json
+Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:8000/v1/training" -ContentType "application/json" -Body $body
 ```
 
 Продолжение из checkpoint с лучшим validation loss:
 
 ```powershell
-.\.venv\Scripts\python.exe -m mini_llm.training --device cuda --resume-from checkpoints/training/best.pt --checkpoint-dir checkpoints/training_from_best --batch-size 4 --epochs 6 --learning-rate 0.0003 --validation-interval 1000 --validation-batches 200 --checkpoint-interval 1000 --log-interval 10 --num-workers 0
+$body = @{
+    device = "cuda"
+    resume_from = "checkpoints/training/best.pt"
+    checkpoint_dir = "checkpoints/training_from_best"
+    batch_size = 4
+    epochs = 6
+    learning_rate = 0.0003
+} | ConvertTo-Json
+Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:8000/v1/training" -ContentType "application/json" -Body $body
 ```
 
 Число эпох при resume — общий целевой номер, а не число дополнительных эпох. Learning rate из
-команды заменяет сохранённый learning rate optimizer. AMP включён по умолчанию; `--no-amp`
-оставлен для диагностики, но на GPU с 4 GB обычно не рекомендуется. Если актуального
+запроса заменяет сохранённый learning rate optimizer. AMP включён по умолчанию; поле
+`mixed_precision = false` оставлено для диагностики, но на GPU с 4 GB обычно не рекомендуется.
+Если актуального
 `token_statistics.json` нет, trainer один раз считает effective train tokens через Dataset перед
 стартом обучения. Отдельный `training_from_best` сохраняет исходную ветку checkpoints без
 перезаписи.
 
-## Изменение путей и параметров
+## Генерация ответа через API
 
-Все CLI поддерживают `--help`:
+После появления обученного checkpoint:
 
 ```powershell
-.\.venv\Scripts\python.exe -m mini_llm.preprocessing --help
-.\.venv\Scripts\python.exe -m mini_llm.dataset_split --help
-.\.venv\Scripts\python.exe -m mini_llm.bpe_tokenizer --help
-.\.venv\Scripts\python.exe -m mini_llm.token_statistics --help
-.\.venv\Scripts\python.exe -m mini_llm.data_pipeline --help
-.\.venv\Scripts\python.exe -m mini_llm.overfit_test --help
-.\.venv\Scripts\python.exe -m mini_llm.training --help
+$body = @{
+    prompt = "Привет! Объясни простыми словами, что такое Transformer."
+    checkpoint_file = "checkpoints/training/best.pt"
+    tokenizer_file = "artifacts/tokenizer/2ch_bpe.json"
+    device = "cuda"
+    max_new_tokens = 128
+    temperature = 0.8
+    top_k = 50
+} | ConvertTo-Json
+Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:8000/v1/generate" -ContentType "application/json" -Body $body
 ```
 
-Основные параметры:
+Ручка загружает tokenizer и checkpoint, формирует prompt с `<BOS>`, `<USER>` и `<ASSISTANT>`,
+возвращает текст и новые token IDs. Она не делает модель обученной: качество ответа зависит только
+от checkpoint.
 
-- preprocessing: `--input-dir`, `--output-dir`, `--review-size`, `--seed`;
-- split: `--input-file`, `--output-dir`, `--seed`;
-- tokenizer: `--train-file`, `--output-file`, `--vocab-size`, `--min-frequency`;
-- statistics: `--splits-dir`, `--tokenizer-file`, `--output-file`,
-  `--max-sequence-length`.
-- Dataset smoke-check: `--split`, `--batch-size`, `--num-workers`, `--seed`, `--max-samples`;
-- overfit test: `--samples`, `--batch-size`, `--steps`, `--learning-rate`, `--device`.
-- training: `--batch-size`, `--epochs`, `--max-steps`, `--learning-rate`,
-  `--validation-interval`, `--checkpoint-interval`, `--resume-from`, `--seed`.
+## Параметры API и вспомогательные CLI
+
+Полные HTTP-схемы и значения по умолчанию доступны в `/docs`. Основные endpoints:
+
+- `POST /v1/training` — обучение или resume;
+- `POST /v1/tokenizer/train` — обучение tokenizer;
+- `POST /v1/preprocessing` — preprocessing;
+- `POST /v1/dataset/split` — split по тредам;
+- `POST /v1/statistics/tokens` — token statistics;
+- `POST /v1/scraper` — последовательный сбор тредов;
+- `POST /v1/generate` — один ответ модели;
+- `GET /v1/jobs/{job_id}` — состояние фоновой операции.
+
+Для быстрых диагностических утилит сохранены прямые CLI:
+
+```powershell
+.\.venv\Scripts\python.exe -m mini_llm.data_pipeline --help
+.\.venv\Scripts\python.exe -m mini_llm.overfit_test --help
+```
 
 ## Что уже реализовано
 
@@ -378,6 +454,7 @@ position, `samples_seen`, `tokens_seen`, окно последних loss, лу�
 - отдельный ручной overfit sanity-check;
 - CUDA/AMP training, AdamW, gradient clipping и validation loss;
 - periodic/best/last checkpoints и продолжение обучения.
+- локальный FastAPI с последовательными background jobs и генерацией по checkpoint.
 
 ## Что ещё не реализовано
 
@@ -385,8 +462,8 @@ position, `samples_seen`, `tokens_seen`, окно последних loss, лу�
 - scheduler и gradient accumulation;
 - расширенные validation metrics и model evaluation;
 - distributed/multi-GPU training;
-- преобразование пользовательского текста в dialogue prompt;
-- CLI или веб-интерфейс для inference.
+- production job queue, аутентификация и постоянное хранение статусов API;
+- пользовательский веб-интерфейс поверх HTTP API.
 
 ## Проверки качества
 

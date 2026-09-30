@@ -1,4 +1,4 @@
-"""Statistics collected while building the processed dialogue dataset."""
+"""Статистика построения обработанного dialogue dataset."""
 
 from collections import Counter
 from collections.abc import Sequence
@@ -22,7 +22,7 @@ def _distribution(values: Sequence[int]) -> dict[str, int | float]:
 
 @dataclass(slots=True)
 class PreprocessingStats:
-    """Counters and distributions collected while streaming samples."""
+    """Счётчики и распределения, собираемые при потоковой обработке samples."""
 
     raw_threads_read: int = 0
     raw_posts_read: int = 0
@@ -40,7 +40,7 @@ class PreprocessingStats:
     reply_chain_depths: list[int] = field(default_factory=list)
 
     def record_sample(self, sample: dict[str, object]) -> None:
-        """Record one accepted sample and its length/depth measurements."""
+        """Учесть один принятый sample и измерения его длины и глубины."""
 
         context = cast(list[dict[str, object]], sample["context"])
         response = cast(dict[str, object], sample["response"])
@@ -57,7 +57,7 @@ class PreprocessingStats:
             self.split_multi_reference_samples += 1
 
     def to_dict(self) -> dict[str, object]:
-        """Return a JSON-compatible statistics report."""
+        """Вернуть JSON-совместимый отчёт статистики."""
 
         duplicate_count = self.dropped["exact_duplicate"] + self.dropped["near_duplicate"]
         return {
