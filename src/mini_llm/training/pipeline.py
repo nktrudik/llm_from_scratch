@@ -7,10 +7,9 @@ import time
 import torch
 from torch.optim import AdamW
 
-from mini_llm.bpe_tokenizer import BPETokenizer
-from mini_llm.config import ModelConfig
-from mini_llm.data_pipeline import DataLoaderConfig, DialogueDataset, create_dataloader
-from mini_llm.model import DecoderOnlyTransformer
+from mini_llm.data.dataset import DataLoaderConfig, DialogueDataset, create_dataloader
+from mini_llm.modeling import DecoderOnlyTransformer, ModelConfig
+from mini_llm.tokenization import BPETokenizer
 from mini_llm.training.checkpoints import load_checkpoint
 from mini_llm.training.config import TrainingConfig
 from mini_llm.training.monitoring import evaluate_validation_loss, gpu_telemetry

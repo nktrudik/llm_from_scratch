@@ -5,13 +5,14 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Self
 
-from pydantic import BaseModel, Field, model_validator, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from mini_llm.bpe_tokenizer import DEFAULT_TOKENIZER_PATH
-from mini_llm.config import DEFAULT_MAX_SEQUENCE_LENGTH, MAX_TRAINING_BATCH_SIZE
+from mini_llm.data.config import MAX_BATCH_SIZE
+from mini_llm.data.preprocessing import PreprocessingConfig
+from mini_llm.data.scraping import ScraperConfig
 from mini_llm.inference import GenerationConfig
-from mini_llm.preprocessing import PreprocessingConfig
-from mini_llm.scraper import ScraperConfig
+from mini_llm.modeling.config import DEFAULT_MAX_SEQUENCE_LENGTH
+from mini_llm.tokenization.config import DEFAULT_TOKENIZER_PATH
 from mini_llm.training import TrainingConfig
 
 
@@ -45,7 +46,7 @@ class TrainingRequest(BaseModel):
     )
     checkpoint_dir: Path = Field(default_factory=lambda: Path("checkpoints/training"))
     resume_from: Path | None = None
-    batch_size: int = Field(default=MAX_TRAINING_BATCH_SIZE, ge=1, le=MAX_TRAINING_BATCH_SIZE)
+    batch_size: int = Field(default=MAX_BATCH_SIZE, ge=1, le=MAX_BATCH_SIZE)
     num_workers: int = Field(default=0, ge=0)
     epochs: int | None = Field(default=3, ge=1)
     max_steps: int | None = Field(default=None, ge=1)
@@ -112,9 +113,7 @@ class TokenStatisticsRequest(BaseModel):
 
     splits_dir: Path = Field(default_factory=lambda: Path("data/processed/splits"))
     tokenizer_file: Path = Field(default_factory=lambda: DEFAULT_TOKENIZER_PATH)
-    output_file: Path = Field(
-        default_factory=lambda: Path("data/processed/token_statistics.json")
-    )
+    output_file: Path = Field(default_factory=lambda: Path("data/processed/token_statistics.json"))
     max_sequence_length: int = Field(default=DEFAULT_MAX_SEQUENCE_LENGTH, ge=1)
 
 
@@ -141,9 +140,7 @@ class GenerationRequest(BaseModel):
     """Prompt и параметры генерации ответа."""
 
     prompt: str = Field(min_length=1)
-    checkpoint_file: Path = Field(
-        default_factory=lambda: Path("checkpoints/training/best.pt")
-    )
+    checkpoint_file: Path = Field(default_factory=lambda: Path("checkpoints/training/best.pt"))
     tokenizer_file: Path = Field(default_factory=lambda: DEFAULT_TOKENIZER_PATH)
     device: str = "cuda"
     max_new_tokens: int = Field(default=256, ge=0)

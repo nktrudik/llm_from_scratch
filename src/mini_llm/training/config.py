@@ -5,8 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from mini_llm.bpe_tokenizer import DEFAULT_TOKENIZER_PATH
-from mini_llm.config import MAX_TRAINING_BATCH_SIZE
+from mini_llm.data.config import MAX_BATCH_SIZE
+from mini_llm.tokenization.config import DEFAULT_TOKENIZER_PATH
 from mini_llm.training.progress import calculate_training_plan
 
 
@@ -19,7 +19,7 @@ class TrainingConfig:
     token_statistics_file: Path = Path("data/processed/token_statistics.json")
     checkpoint_dir: Path = Path("checkpoints/training")
     resume_from: Path | None = None
-    batch_size: int = MAX_TRAINING_BATCH_SIZE
+    batch_size: int = MAX_BATCH_SIZE
     num_workers: int = 0
     epochs: int | None = 3
     max_steps: int | None = None
@@ -35,10 +35,8 @@ class TrainingConfig:
     mixed_precision: bool = True
 
     def __post_init__(self) -> None:
-        if not 1 <= self.batch_size <= MAX_TRAINING_BATCH_SIZE:
-            raise ValueError(
-                f"batch_size должен быть в диапазоне от 1 до {MAX_TRAINING_BATCH_SIZE}"
-            )
+        if not 1 <= self.batch_size <= MAX_BATCH_SIZE:
+            raise ValueError(f"batch_size должен быть в диапазоне от 1 до {MAX_BATCH_SIZE}")
         positive_values = {
             "validation_interval": self.validation_interval,
             "checkpoint_interval": self.checkpoint_interval,

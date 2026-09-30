@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 
-from mini_llm.data_pipeline import DialogueDataset
+from mini_llm.data.dataset import DialogueDataset
 
 
 @dataclass(frozen=True, slots=True)

@@ -55,7 +55,7 @@ Special token IDs зафиксированы в `ModelConfig`:
 Создание модели:
 
 ```python
-from mini_llm import DecoderOnlyTransformer, ModelConfig
+from mini_llm.modeling import DecoderOnlyTransformer, ModelConfig
 
 config = ModelConfig()
 model = DecoderOnlyTransformer(config)
@@ -68,23 +68,23 @@ logits, а с `targets` — `(logits, loss)`. Метод `generate()` работ
 
 ```text
 src/mini_llm/
-├── config.py                # конфигурация модели и special token IDs
-├── model.py                 # attention, MLP, Transformer-блок и модель
-├── api/                     # HTTP routes, схемы, сервисы и реестр фоновых jobs
-├── training/                # config, schemas, monitoring, checkpoints и training pipeline
-├── scraper/                 # схемы, parsing, storage и HTTP-клиент 2ch
-├── preprocessing/           # схемы, очистка, reply graph и pipeline
-├── preprocessing_stats.py   # статистика preprocessing
-├── deduplication.py         # точные и консервативные near-duplicates
-├── dialogue_format.py       # схема JSONL и role-token serialization
-├── dataset_split.py         # train/validation/test по тредам
-├── bpe_tokenizer.py         # обучение, сохранение и загрузка BPE
-├── token_statistics.py      # raw/effective token statistics
-├── data_pipeline.py         # PyTorch Dataset, padding и DataLoader
-├── overfit_test.py          # отдельный ручной sanity-check обучения
-├── inference.py             # загрузка checkpoint и текстовая генерация
-├── training_checkpoint.py   # совместимый импорт старого checkpoint API
-└── training_progress.py     # совместимый импорт старого progress API
+├── main.py                  # единственная ASGI-точка входа
+├── __init__.py              # обязательный маркер Python-пакета
+├── api/                     # HTTP routes, Pydantic-схемы, сервисы и jobs
+├── modeling/                # ModelConfig и decoder-only Transformer
+├── tokenization/            # BPE tokenizer и его конфигурация
+├── data/
+│   ├── config.py            # общие ограничения Dataset/DataLoader
+│   ├── dialogue.py          # схема dialogue JSONL и role tokens
+│   ├── dataset.py           # PyTorch Dataset, padding и DataLoader
+│   ├── splitting.py         # train/validation/test по тредам
+│   ├── statistics.py        # raw/effective token statistics
+│   ├── deduplication.py     # exact и near-duplicate detection
+│   ├── preprocessing/       # очистка, reply graph, схемы и pipeline
+│   └── scraping/            # JSON API 2ch, parsing и storage
+├── training/                # config, pipeline, monitoring, checkpoints и overfit
+├── inference/               # config, схемы и генерация по checkpoint
+└── ui/                      # зарезервировано под будущий UI, пока пусто
 
 data/raw/2ch/<board>/         # неизменяемые raw JSON тредов
 data/processed/               # dialogue dataset, split и отчёты
@@ -92,16 +92,16 @@ artifacts/tokenizer/          # обученный tokenizer JSON
 tests/                        # быстрые unit tests
 ```
 
-Файлы `training.py`, `preprocessing.py` и `scraper.py` заменены одноимёнными пакетами. Их публичные
-Python-импорты сохранены, но запуск долгих операций теперь сосредоточен в API. Ни один training
-pipeline не стартует при импорте модуля.
+Корень пакета не содержит бизнес-логики: кроме обязательного `__init__.py`, там находится только
+`main.py`. Предметные области изолированы в пакетах, а запуск долгих операций сосредоточен в API.
+Ни один training pipeline не стартует при импорте модуля.
 
 ## Локальный FastAPI
 
 Запуск из корня проекта, без `--workers` и без `--reload`:
 
 ```powershell
-.\.venv\Scripts\uvicorn.exe mini_llm.api:app --host 127.0.0.1 --port 8000
+.\.venv\Scripts\uvicorn.exe mini_llm.main:app --host 127.0.0.1 --port 8000
 ```
 
 Swagger UI доступен на `http://127.0.0.1:8000/docs`. Тяжёлые операции возвращают `job_id` и
@@ -206,7 +206,7 @@ alphabet обеспечивает представление русского и
 ```python
 from pathlib import Path
 
-from mini_llm.bpe_tokenizer import BPETokenizer
+from mini_llm.tokenization import BPETokenizer
 
 tokenizer = BPETokenizer.load(Path("artifacts/tokenizer/2ch_bpe.json"))
 token_ids = tokenizer.encode("Привет, world! 😎")
@@ -293,13 +293,13 @@ DecoderOnlyTransformer(input_ids, targets)
 справа через `<PAD>`; padded targets игнорируются существующим `cross_entropy`, поскольку модель
 использует `ignore_index=pad_token_id`. Train DataLoader включает deterministic shuffle,
 validation/test создаются без shuffle, последний неполный batch сохраняется. Общий предел
-`batch_size` задаётся в `config.py` и сейчас равен 8; для RTX 3050 4 GB в примерах обучения
+`batch_size` задаётся в `data/config.py` и сейчас равен 8; для RTX 3050 4 GB в примерах обучения
 используется более консервативное значение 4.
 
 Быстрая проверка восьми пригодных train samples и одного CPU batch:
 
 ```powershell
-.\.venv\Scripts\python.exe -m mini_llm.data_pipeline --split train --max-samples 8 --batch-size 2
+.\.venv\Scripts\python.exe -m mini_llm.data.dataset --split train --max-samples 8 --batch-size 2
 ```
 
 Команда читает готовые `data/processed/splits/train.jsonl` и
@@ -314,7 +314,7 @@ resume, distributed training или полного прохода по корп�
 Ручной запуск на GPU:
 
 ```powershell
-.\.venv\Scripts\python.exe -m mini_llm.overfit_test --device cuda --samples 16 --batch-size 1 --steps 50 --learning-rate 0.0003
+.\.venv\Scripts\python.exe -m mini_llm.training.overfit --device cuda --samples 16 --batch-size 1 --steps 50 --learning-rate 0.0003
 ```
 
 Команда читает `train.jsonl` и готовый tokenizer, создаёт новую модель только в памяти и печатает
@@ -434,8 +434,8 @@ Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:8000/v1/generate" -Content
 Для быстрых диагностических утилит сохранены прямые CLI:
 
 ```powershell
-.\.venv\Scripts\python.exe -m mini_llm.data_pipeline --help
-.\.venv\Scripts\python.exe -m mini_llm.overfit_test --help
+.\.venv\Scripts\python.exe -m mini_llm.data.dataset --help
+.\.venv\Scripts\python.exe -m mini_llm.training.overfit --help
 ```
 
 ## Что уже реализовано

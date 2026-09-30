@@ -12,11 +12,11 @@ from mini_llm.api.schemas import (
     TokenStatisticsRequest,
     TrainingRequest,
 )
-from mini_llm.bpe_tokenizer import train_bpe_tokenizer
-from mini_llm.dataset_split import SplitConfig, split_dataset
-from mini_llm.preprocessing import preprocess_dataset
-from mini_llm.scraper import TwoChScraper
-from mini_llm.token_statistics import TokenStatisticsConfig, calculate_token_statistics
+from mini_llm.data.preprocessing import preprocess_dataset
+from mini_llm.data.scraping import TwoChScraper
+from mini_llm.data.splitting import SplitConfig, split_dataset
+from mini_llm.data.statistics import TokenStatisticsConfig, calculate_token_statistics
+from mini_llm.tokenization import train_bpe_tokenizer
 from mini_llm.training import train_model
 
 

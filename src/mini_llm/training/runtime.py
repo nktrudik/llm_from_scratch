@@ -7,8 +7,7 @@ from pathlib import Path
 import torch
 from torch.optim import AdamW
 
-from mini_llm.config import ModelConfig
-from mini_llm.model import DecoderOnlyTransformer
+from mini_llm.modeling import DecoderOnlyTransformer, ModelConfig
 from mini_llm.training.checkpoints import save_checkpoint
 from mini_llm.training.config import TrainingConfig
 from mini_llm.training.schemas import TrainingState

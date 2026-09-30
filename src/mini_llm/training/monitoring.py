@@ -5,8 +5,8 @@ from __future__ import annotations
 import torch
 from torch.utils.data import DataLoader
 
-from mini_llm.data_pipeline import CausalLMBatch
-from mini_llm.model import DecoderOnlyTransformer
+from mini_llm.data.dataset import CausalLMBatch
+from mini_llm.modeling import DecoderOnlyTransformer
 
 
 def gpu_telemetry(device: torch.device) -> str:

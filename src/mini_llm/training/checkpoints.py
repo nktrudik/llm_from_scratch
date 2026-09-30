@@ -11,8 +11,7 @@ import torch
 from torch import Tensor
 from torch.optim import Optimizer
 
-from mini_llm.config import ModelConfig
-from mini_llm.model import DecoderOnlyTransformer
+from mini_llm.modeling import DecoderOnlyTransformer, ModelConfig
 from mini_llm.training.schemas import TrainingState
 
 
