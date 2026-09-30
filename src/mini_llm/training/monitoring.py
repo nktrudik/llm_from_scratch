@@ -5,8 +5,8 @@ from __future__ import annotations
 import torch
 from torch.utils.data import DataLoader
 
-from mini_llm.data.dataset import CausalLMBatch
-from mini_llm.modeling import DecoderOnlyTransformer
+from mini_llm.data.dataset import IGNORE_INDEX, CausalLMBatch
+from mini_llm.modeling import CausalLMBackend
 
 
 def gpu_telemetry(device: torch.device) -> str:
@@ -23,12 +23,12 @@ def gpu_telemetry(device: torch.device) -> str:
 
 @torch.no_grad()
 def evaluate_validation_loss(
-    model: DecoderOnlyTransformer,
+    model: CausalLMBackend,
     loader: DataLoader[CausalLMBatch],
     *,
     device: torch.device,
     use_amp: bool,
-    pad_token_id: int,
+    amp_dtype: torch.dtype,
     max_batches: int,
 ) -> float:
     """Посчитать взвешенный по токенам validation loss."""
@@ -40,11 +40,12 @@ def evaluate_validation_loss(
         if max_batches and batch_index >= max_batches:
             break
         input_ids = batch["input_ids"].to(device, non_blocking=True)
-        targets = batch["targets"].to(device, non_blocking=True)
-        with torch.autocast(device_type=device.type, dtype=torch.bfloat16, enabled=use_amp):
-            _, loss = model(input_ids, targets)
-        valid_tokens = int((targets != pad_token_id).sum().item())
-        weighted_loss += loss.item() * valid_tokens
+        attention_mask = batch["attention_mask"].to(device, non_blocking=True)
+        labels = batch["labels"].to(device, non_blocking=True)
+        with torch.autocast(device_type=device.type, dtype=amp_dtype, enabled=use_amp):
+            output = model.forward_batch(input_ids, attention_mask, labels)
+        valid_tokens = int((labels != IGNORE_INDEX).sum().item())
+        weighted_loss += output.loss.item() * valid_tokens
         token_count += valid_tokens
     model.train()
     if token_count == 0:

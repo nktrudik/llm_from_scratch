@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 from mini_llm.data.config import MAX_BATCH_SIZE
 from mini_llm.tokenization.config import DEFAULT_TOKENIZER_PATH
@@ -19,6 +20,8 @@ class TrainingConfig:
     token_statistics_file: Path = Path("data/processed/token_statistics.json")
     checkpoint_dir: Path = Path("checkpoints/training")
     resume_from: Path | None = None
+    model_backend: Literal["custom", "pretrained"] = "custom"
+    pretrained_config_file: Path | None = None
     batch_size: int = MAX_BATCH_SIZE
     num_workers: int = 0
     epochs: int | None = 3
@@ -35,6 +38,10 @@ class TrainingConfig:
     mixed_precision: bool = True
 
     def __post_init__(self) -> None:
+        if self.model_backend == "pretrained" and self.pretrained_config_file is None:
+            raise ValueError("Для pretrained backend нужен pretrained_config_file")
+        if self.model_backend == "custom" and self.pretrained_config_file is not None:
+            raise ValueError("pretrained_config_file допустим только для pretrained backend")
         if not 1 <= self.batch_size <= MAX_BATCH_SIZE:
             raise ValueError(f"batch_size должен быть в диапазоне от 1 до {MAX_BATCH_SIZE}")
         positive_values = {

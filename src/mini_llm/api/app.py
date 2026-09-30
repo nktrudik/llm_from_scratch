@@ -14,6 +14,7 @@ from mini_llm.api.schemas import (
     HealthResponse,
     JobResponse,
     PreprocessingRequest,
+    PretrainedPrepareRequest,
     ScrapeRequest,
     TokenizerTrainingRequest,
     TokenStatisticsRequest,
@@ -22,6 +23,7 @@ from mini_llm.api.schemas import (
 from mini_llm.api.services import (
     run_dataset_split,
     run_preprocessing,
+    run_pretrained_prepare,
     run_scraper,
     run_token_statistics,
     run_tokenizer_training,
@@ -72,6 +74,24 @@ def start_training(request: TrainingRequest, background_tasks: BackgroundTasks) 
     """Поставить полное обучение модели в локальную фоновую очередь."""
 
     return _submit_job("training", background_tasks, lambda: run_training(request))
+
+
+@app.post(
+    "/v1/pretrained/prepare",
+    response_model=JobResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def start_pretrained_prepare(
+    request: PretrainedPrepareRequest,
+    background_tasks: BackgroundTasks,
+) -> JobResponse:
+    """Загрузить pretrained model в cache и подготовить режим адаптации."""
+
+    return _submit_job(
+        "pretrained_prepare",
+        background_tasks,
+        lambda: run_pretrained_prepare(request),
+    )
 
 
 @app.post(

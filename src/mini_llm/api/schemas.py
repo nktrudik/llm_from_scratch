@@ -12,6 +12,7 @@ from mini_llm.data.preprocessing import PreprocessingConfig
 from mini_llm.data.scraping import ScraperConfig
 from mini_llm.inference import GenerationConfig
 from mini_llm.modeling.config import DEFAULT_MAX_SEQUENCE_LENGTH
+from mini_llm.pretrained import PretrainedConfig
 from mini_llm.tokenization.config import DEFAULT_TOKENIZER_PATH
 from mini_llm.training import TrainingConfig
 
@@ -46,6 +47,8 @@ class TrainingRequest(BaseModel):
     )
     checkpoint_dir: Path = Field(default_factory=lambda: Path("checkpoints/training"))
     resume_from: Path | None = None
+    model_backend: str = Field(default="custom", pattern="^(custom|pretrained)$")
+    pretrained_config_file: Path | None = None
     batch_size: int = Field(default=MAX_BATCH_SIZE, ge=1, le=MAX_BATCH_SIZE)
     num_workers: int = Field(default=0, ge=0)
     epochs: int | None = Field(default=3, ge=1)
@@ -67,12 +70,43 @@ class TrainingRequest(BaseModel):
 
         if (self.epochs is None) == (self.max_steps is None):
             raise ValueError("Нужно задать ровно один режим: epochs или max_steps")
+        if self.model_backend == "pretrained" and self.pretrained_config_file is None:
+            raise ValueError("Для pretrained backend нужен pretrained_config_file")
+        if self.model_backend == "custom" and self.pretrained_config_file is not None:
+            raise ValueError("pretrained_config_file допустим только для pretrained backend")
         return self
 
     def to_config(self) -> TrainingConfig:
         """Преобразовать HTTP-схему во внутреннюю конфигурацию training pipeline."""
 
         return TrainingConfig(**self.model_dump())
+
+
+class PretrainedPrepareRequest(BaseModel):
+    """Параметры подготовки модели из Hugging Face Hub или локального cache."""
+
+    model_id: str = Field(min_length=1)
+    revision: str = Field(default="main", min_length=1)
+    cache_dir: Path = Field(default_factory=lambda: Path(".cache/huggingface"))
+    adaptation_mode: str = Field(default="lora", pattern="^(full|lora|qlora)$")
+    torch_dtype: str = Field(default="auto", pattern="^(auto|float32|float16|bfloat16)$")
+    max_sequence_length: int = Field(default=1024, ge=2)
+    local_files_only: bool = False
+    trust_remote_code: bool = False
+    gradient_checkpointing: bool = True
+    lora_rank: int = Field(default=16, ge=1)
+    lora_alpha: int = Field(default=32, ge=1)
+    lora_dropout: float = Field(default=0.05, ge=0, lt=1)
+    lora_target_modules: tuple[str, ...] | str = "all-linear"
+    qlora_quant_type: str = Field(default="nf4", pattern="^(nf4|fp4)$")
+    qlora_double_quant: bool = True
+    device_map: str | None = None
+    output_config: Path = Field(default_factory=lambda: Path("configs/pretrained/model.json"))
+
+    def to_config(self) -> PretrainedConfig:
+        """Преобразовать HTTP-схему в проверенную pretrained-конфигурацию."""
+
+        return PretrainedConfig.model_validate(self.model_dump(exclude={"output_config"}))
 
 
 class TokenizerTrainingRequest(BaseModel):

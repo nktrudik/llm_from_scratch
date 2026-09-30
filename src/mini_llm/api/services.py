@@ -7,6 +7,7 @@ from dataclasses import asdict
 from mini_llm.api.schemas import (
     DatasetSplitRequest,
     PreprocessingRequest,
+    PretrainedPrepareRequest,
     ScrapeRequest,
     TokenizerTrainingRequest,
     TokenStatisticsRequest,
@@ -16,6 +17,7 @@ from mini_llm.data.preprocessing import preprocess_dataset
 from mini_llm.data.scraping import TwoChScraper
 from mini_llm.data.splitting import SplitConfig, split_dataset
 from mini_llm.data.statistics import TokenStatisticsConfig, calculate_token_statistics
+from mini_llm.pretrained import prepare_pretrained_model
 from mini_llm.tokenization import train_bpe_tokenizer
 from mini_llm.training import train_model
 
@@ -29,6 +31,20 @@ def run_training(request: TrainingRequest) -> dict[str, object]:
         "best_validation_loss": result.best_validation_loss,
         "last_checkpoint": str(result.last_checkpoint),
         "interrupted": result.interrupted,
+    }
+
+
+def run_pretrained_prepare(request: PretrainedPrepareRequest) -> dict[str, object]:
+    """Подготовить pretrained model и сохранить воспроизводимую конфигурацию."""
+
+    config = request.to_config()
+    config.save(request.output_config)
+    prepared = prepare_pretrained_model(config)
+    return {
+        "config_file": str(request.output_config),
+        "adaptation_mode": config.adaptation_mode,
+        "trainable_parameters": prepared.trainable_parameters,
+        "total_parameters": prepared.total_parameters,
     }
 
 

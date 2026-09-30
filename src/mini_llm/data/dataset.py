@@ -17,31 +17,33 @@ from torch.utils.data import DataLoader, Dataset
 
 from mini_llm.data.config import MAX_BATCH_SIZE
 from mini_llm.data.dialogue import (
-    PAD_TOKEN,
     DialogueFormatError,
     DialogueSample,
     parse_dialogue_sample,
 )
+from mini_llm.data.interfaces import DialogueTokenizer, OversizedResponseError
 from mini_llm.data.splitting import SPLIT_NAMES
 from mini_llm.modeling.config import DEFAULT_MAX_SEQUENCE_LENGTH, ModelConfig
-from mini_llm.tokenization import (
-    DEFAULT_TOKENIZER_PATH,
-    BPETokenizer,
-    OversizedResponseError,
-)
+from mini_llm.tokenization import DEFAULT_TOKENIZER_PATH, BPETokenizer
+
+IGNORE_INDEX = -100
 
 
 class CausalLMItem(TypedDict):
     """Одна shifted-пара variable-length tensors."""
 
     input_ids: Tensor
+    attention_mask: Tensor
+    labels: Tensor
     targets: Tensor
 
 
 class CausalLMBatch(TypedDict):
-    """Один padded batch, совместимый с DecoderOnlyTransformer.forward."""
+    """Один padded batch для универсального causal LM backend."""
 
     input_ids: Tensor
+    attention_mask: Tensor
+    labels: Tensor
     targets: Tensor
 
 
@@ -67,7 +69,7 @@ class DialogueDataset(Dataset[CausalLMItem]):
     def __init__(
         self,
         split_file: Path,
-        tokenizer: BPETokenizer,
+        tokenizer: DialogueTokenizer,
         *,
         max_sequence_length: int = DEFAULT_MAX_SEQUENCE_LENGTH,
         max_samples: int | None = None,
@@ -108,10 +110,9 @@ class DialogueDataset(Dataset[CausalLMItem]):
                     continue
                 sample = self._parse_line(line, f"{self.split_file}:{line_number}")
                 self.scanned_samples += 1
-                response_ids = self.tokenizer.encode_response(sample)
                 try:
-                    self.tokenizer.build_dialogue_window(
-                        (), response_ids, max_length=self.max_sequence_length
+                    self.tokenizer.encode_training_window(
+                        sample, max_length=self.max_sequence_length
                     )
                 except OversizedResponseError:
                     self.oversized_response_count += 1
@@ -136,13 +137,17 @@ class DialogueDataset(Dataset[CausalLMItem]):
 
     def __getitem__(self, index: int) -> CausalLMItem:
         sample = self._read_sample(index)
-        token_ids = self.tokenizer.encode_dialogue_window(
-            sample, max_length=self.max_sequence_length
-        )
-        sequence = torch.tensor(token_ids, dtype=torch.long)
+        encoded = self.tokenizer.encode_training_window(sample, max_length=self.max_sequence_length)
+        sequence = torch.tensor(encoded.token_ids, dtype=torch.long)
+        labels = sequence[1:].clone()
+        # labels[i] соответствует token_ids[i + 1]. Контекст и маркер ASSISTANT
+        # нужны как вход, но первый обучающий target — текст ответа после маркера.
+        labels[: max(0, encoded.response_start - 1)] = IGNORE_INDEX
         return {
             "input_ids": sequence[:-1],
-            "targets": sequence[1:],
+            "attention_mask": torch.ones(sequence.numel() - 1, dtype=torch.long),
+            "labels": labels,
+            "targets": labels,
         }
 
 
@@ -153,12 +158,19 @@ def collate_causal_lm_batch(items: Sequence[CausalLMItem], *, pad_token_id: int)
         raise ValueError("Нельзя собрать пустой batch")
     max_length = max(item["input_ids"].numel() for item in items)
     input_ids = torch.full((len(items), max_length), pad_token_id, dtype=torch.long)
-    targets = torch.full((len(items), max_length), pad_token_id, dtype=torch.long)
+    attention_mask = torch.zeros((len(items), max_length), dtype=torch.long)
+    labels = torch.full((len(items), max_length), IGNORE_INDEX, dtype=torch.long)
     for row, item in enumerate(items):
         length = item["input_ids"].numel()
         input_ids[row, :length] = item["input_ids"]
-        targets[row, :length] = item["targets"]
-    return {"input_ids": input_ids, "targets": targets}
+        attention_mask[row, :length] = item["attention_mask"]
+        labels[row, :length] = item["labels"]
+    return {
+        "input_ids": input_ids,
+        "attention_mask": attention_mask,
+        "labels": labels,
+        "targets": labels,
+    }
 
 
 def create_dataloader(
@@ -174,7 +186,7 @@ def create_dataloader(
     generator.manual_seed(active_config.random_seed)
     collate = partial(
         collate_causal_lm_batch,
-        pad_token_id=dataset.tokenizer.token_to_id(PAD_TOKEN),
+        pad_token_id=dataset.tokenizer.pad_token_id,
     )
     return DataLoader(
         dataset,

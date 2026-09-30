@@ -49,6 +49,7 @@ class _Accumulator:
     oversized_response_samples: int = 0
     raw_full_tokens: int = 0
     effective_tokens: int = 0
+    training_loss_tokens: int = 0
     characters: int = 0
     content_tokens: int = 0
     unknown_tokens: int = 0
@@ -113,6 +114,8 @@ class _Accumulator:
         self.usable_samples += 1
         self.usable_raw_context_tokens += len(raw_context_ids)
         self.effective_tokens += len(effective_ids)
+        # ASSISTANT служит входным разделителем; loss начинается с текста response и включает EOS.
+        self.training_loss_tokens += max(0, len(response_ids) - 1)
         self.effective_context_tokens += effective_context_length
         self.effective_sequence_lengths.append(len(effective_ids))
         self.effective_context_lengths.append(effective_context_length)
@@ -177,6 +180,7 @@ def _accumulator_report(accumulator: _Accumulator, max_sequence_length: int) -> 
         "unusable_oversized_response_samples": accumulator.oversized_response_samples,
         "raw_full_tokens": accumulator.raw_full_tokens,
         "effective_tokens": accumulator.effective_tokens,
+        "training_loss_tokens": accumulator.training_loss_tokens,
         "tokens": accumulator.raw_full_tokens,
         "characters_per_token": round(accumulator.characters / accumulator.content_tokens, 6)
         if accumulator.content_tokens
@@ -297,13 +301,14 @@ def calculate_token_statistics(
         "vocabulary_size": tokenizer.vocab_size,
         "model_parameters": model_parameters,
         "max_sequence_length": active_config.max_sequence_length,
+        "training_objective": "response_only",
         "total_tokens": total.raw_full_tokens,
         "raw_full_tokens": total.raw_full_tokens,
         "effective_tokens": total.effective_tokens,
         "tokens_per_parameter": round(total.raw_full_tokens / model_parameters, 6),
-        "effective_train_tokens": train_accumulator.effective_tokens,
+        "effective_train_tokens": train_accumulator.training_loss_tokens,
         "effective_train_tokens_per_parameter": round(
-            train_accumulator.effective_tokens / model_parameters, 6
+            train_accumulator.training_loss_tokens / model_parameters, 6
         ),
         "train_samples_full_window": train_accumulator.full_window_samples,
         "train_samples_shorter_than_window": train_accumulator.shorter_window_samples,

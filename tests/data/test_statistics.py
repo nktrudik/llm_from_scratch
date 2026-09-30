@@ -72,8 +72,9 @@ def test_token_statistics_separates_raw_effective_and_oversized(tmp_path: Path) 
     assert cast(dict[str, object], train["effective_window_usage"])["full_window_samples"] == 1
     assert train_response["responses_over_max_sequence_length"] == 1
     assert cast(dict[str, object], report["oversized_responses_by_board"])["b"] == 1
-    assert report["effective_train_tokens"] == train["effective_tokens"]
-    expected_ratio = cast(int, train["effective_tokens"]) / 5_518_848
+    assert report["training_objective"] == "response_only"
+    assert report["effective_train_tokens"] == train["training_loss_tokens"]
+    expected_ratio = cast(int, train["training_loss_tokens"]) / 5_518_848
     assert report["effective_train_tokens_per_parameter"] == round(expected_ratio, 6)
     assert cast(int, split_report["validation"]["effective_tokens"]) > 0
     assert cast(int, split_report["test"]["effective_tokens"]) > 0

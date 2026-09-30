@@ -3,8 +3,8 @@
 Учебный проект компактной decoder-only Transformer-модели на PyTorch и последовательного
 pipeline подготовки текстовых диалогов из тредов 2ch. Репозиторий содержит сборщик JSON API,
 preprocessing графа ответов, разбиение датасета по тредам, обучение собственного byte-level BPE
-tokenizer, расчёт token statistics, однопроцессное обучение модели на CUDA и локальный FastAPI
-для ручного запуска этапов.
+tokenizer, расчёт token statistics, универсальное обучение custom и pretrained causal LM,
+LoRA/QLoRA и локальный FastAPI для ручного запуска этапов.
 
 В проекте пока нет distributed training, scheduler, production model evaluation и пользовательского
 веб-интерфейса. Код обучения и HTTP-генерации реализован, но сама модель в репозитории не обучена и
@@ -17,6 +17,14 @@ tokenizer, расчёт token statistics, однопроцессное обуч�
 ```powershell
 uv sync --extra dev
 ```
+
+Для Hugging Face Transformers, PEFT и bitsandbytes нужна отдельная optional-группа:
+
+```powershell
+uv sync --extra dev --extra pretrained
+```
+
+Базовый from-scratch pipeline от неё не зависит.
 
 Без `uv` можно использовать:
 
@@ -71,7 +79,8 @@ src/mini_llm/
 ├── main.py                  # единственная ASGI-точка входа
 ├── __init__.py              # обязательный маркер Python-пакета
 ├── api/                     # HTTP routes, Pydantic-схемы, сервисы и jobs
-├── modeling/                # ModelConfig и decoder-only Transformer
+├── modeling/                # общий model interface и собственный Transformer
+├── pretrained/              # Hugging Face, cache, full/LoRA/QLoRA и генерация
 ├── tokenization/            # BPE tokenizer и его конфигурация
 ├── data/
 │   ├── config.py            # общие ограничения Dataset/DataLoader
@@ -82,7 +91,7 @@ src/mini_llm/
 │   ├── deduplication.py     # exact и near-duplicate detection
 │   ├── preprocessing/       # очистка, reply graph, схемы и pipeline
 │   └── scraping/            # JSON API 2ch, parsing и storage
-├── training/                # config, pipeline, monitoring, checkpoints и overfit
+├── training/                # универсальный trainer, monitoring, checkpoints и overfit
 ├── inference/               # config, схемы и генерация по checkpoint
 └── ui/                      # зарезервировано под будущий UI, пока пусто
 
@@ -246,7 +255,8 @@ Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:8000/v1/statistics/tokens"
 - raw/full tokens до ограничения окна;
 - effective tokens после формирования допустимых окон;
 - raw и effective tokens отдельно для train, validation и test;
-- `effective_train_tokens_per_parameter`, рассчитанный только по train;
+- `training_loss_tokens` и `effective_train_tokens_per_parameter`, рассчитанные только по
+  response targets в train;
 - characters per token;
 - min, mean, median, p90, p95 и max raw/effective lengths;
 - число полных и коротких effective windows;
@@ -256,10 +266,10 @@ Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:8000/v1/statistics/tokens"
 - количество и долю `<UNK>`;
 - статистику по board.
 
-`effective_train_tokens` — число token IDs в пригодных train windows после сохранения полного
-response и сокращения context до лимита 1024. Validation/test не входят в
-`effective_train_tokens_per_parameter`. Oversized response не обрезается, даёт ноль effective
-tokens и остаётся в исходном split JSONL.
+`effective_tokens` описывает все token IDs пригодных окон после сокращения context до 1024, а
+`effective_train_tokens` — только response и EOS, по которым реально считается training loss.
+Validation/test не входят в `effective_train_tokens_per_parameter`. Oversized response не
+обрезается, даёт ноль effective tokens и остаётся в исходном split JSONL.
 
 Этап ничего не удаляет и не создаёт tokenized training dataset. Ресурсы: CPU и последовательное
 чтение диска; RAM используется для массивов длин samples. GPU не используется и не требуется.
@@ -321,14 +331,66 @@ resume, distributed training или полного прохода по корп�
 loss. Она использует CPU/RAM для Dataset и GPU/VRAM для модели и batch; автоматически не запускается
 и ничего не сохраняет.
 
+## Pretrained-модели, LoRA и QLoRA
+
+Модуль `mini_llm.pretrained` загружает causal LM и tokenizer через Hugging Face model ID,
+поддерживает закреплённую branch/tag/commit revision, отдельный cache и сохраняемую JSON-
+конфигурацию. Логика Transformers/PEFT не смешана с собственной реализацией Transformer.
+
+Пример для RTX 3050 4 GB использует базовую multilingual-модель `Qwen/Qwen2.5-0.5B` и закрепляет
+её commit. Подготовка QLoRA скачивает веса в `.cache/huggingface`, подключает 4-bit NF4 и LoRA,
+а параметры сохраняет в `configs/pretrained/qwen2.5-0.5b-qlora.json`:
+
+```powershell
+.\.venv\Scripts\python.exe -m mini_llm.pretrained prepare --model-id Qwen/Qwen2.5-0.5B --revision 060db6499f32faf8b98477b0a26969ef7d8b9987 --mode qlora --dtype float16 --max-sequence-length 1024 --output-config configs/pretrained/qwen2.5-0.5b-qlora.json
+```
+
+QLoRA fine-tuning на существующих split-файлах:
+
+```powershell
+.\.venv\Scripts\python.exe -m mini_llm.training --backend pretrained --pretrained-config configs/pretrained/qwen2.5-0.5b-qlora.json --splits-dir data/processed/splits --checkpoint-dir checkpoints/qwen2.5-0.5b-qlora --batch-size 1 --epochs 3 --learning-rate 0.0002 --validation-interval 1000 --checkpoint-interval 1000
+```
+
+Для обычного LoRA сначала создайте отдельную конфигурацию, заменив `--mode qlora` на
+`--mode lora`, а затем передайте новый JSON в ту же training-команду. LoRA хранит базовые веса в
+выбранной dtype, поэтому требует больше VRAM, чем QLoRA.
+
+Full fine-tuning также является отдельной конфигурацией:
+
+```powershell
+.\.venv\Scripts\python.exe -m mini_llm.pretrained prepare --model-id Qwen/Qwen2.5-0.5B --revision 060db6499f32faf8b98477b0a26969ef7d8b9987 --mode full --dtype float16 --max-sequence-length 1024 --output-config configs/pretrained/qwen2.5-0.5b-full.json
+.\.venv\Scripts\python.exe -m mini_llm.training --backend pretrained --pretrained-config configs/pretrained/qwen2.5-0.5b-full.json --splits-dir data/processed/splits --checkpoint-dir checkpoints/qwen2.5-0.5b-full --batch-size 1 --epochs 3 --learning-rate 0.00001 --validation-interval 1000 --checkpoint-interval 1000
+```
+
+Full fine-tuning 0.5B-модели с AdamW обычно не помещается в 4 GB VRAM. Команда реализована, но
+для неё потребуется GPU с большим объёмом памяти либо меньшая модель. QLoRA — практичный стартовый
+режим для RTX 3050.
+
+Продолжение QLoRA после остановки, до общего целевого числа четырёх эпох:
+
+```powershell
+.\.venv\Scripts\python.exe -m mini_llm.training --backend pretrained --pretrained-config configs/pretrained/qwen2.5-0.5b-qlora.json --splits-dir data/processed/splits --checkpoint-dir checkpoints/qwen2.5-0.5b-qlora --resume-from checkpoints/qwen2.5-0.5b-qlora/last.pt --batch-size 1 --epochs 4 --learning-rate 0.0002 --validation-interval 1000 --checkpoint-interval 1000
+```
+
+Revision, adaptation mode, tokenizer additions и PEFT-параметры входят в checkpoint metadata.
+Resume отклоняется, если конфигурация модели отличается. Программный API предоставляет
+`prepare_pretrained_model()` для training и `generate_pretrained()` для inference.
+
 ## Полноценное обучение
 
 `mini_llm.training` обучает модель на `train.jsonl` и периодически считает token-weighted loss на
-`validation.jsonl`. Реализованы CUDA, AdamW, automatic mixed precision, gradient clipping,
+`validation.jsonl`. Trainer работает через `CausalLMBackend` и не зависит от внутреннего класса
+модели: один pipeline обслуживает собственный Transformer, Hugging Face causal LM, full
+fine-tuning, LoRA и QLoRA. Реализованы CUDA, AdamW, automatic mixed precision, gradient clipping,
 terminal progress, tokens/sec и GPU telemetry: имя GPU, allocated/reserved/peak VRAM. При старте
 печатаются `steps_per_epoch`, `planned_total_steps`, число train samples и effective train tokens.
 Во время обучения выводятся `samples_seen`, `tokens_seen`, процент текущей эпохи, текущий loss и
 rolling average loss по последним 100 шагам.
+
+Training objective — только assistant response. `input_ids` содержат BOS, последние сообщения
+context, role-маркер `ASSISTANT`, response и EOS, но в `labels` context, role-маркер и padding
+заменены на `-100`. Поэтому loss, validation loss и `tokens_seen` учитывают только текст response
+и завершающий EOS.
 
 Полное обучение с нуля на RTX 3050 4 GB и всём train split через API:
 
@@ -361,6 +423,8 @@ Trainer создаёт в `checkpoints/training/`:
 
 Checkpoint содержит веса модели, AdamW state, AMP GradScaler, global step, точную epoch/batch
 position, `samples_seen`, `tokens_seen`, окно последних loss, лучший validation loss и RNG state.
+Для LoRA/QLoRA сохраняются только параметры PEFT-адаптера; при resume базовая revision снова
+загружается из локального Hugging Face cache, затем восстанавливаются адаптер и optimizer state.
 Для точного продолжения текущей эпохи `batch_size` должен совпадать с сохранённым. Продолжение из
 последнего checkpoint до общего числа шести эпох:
 
@@ -423,6 +487,7 @@ Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:8000/v1/generate" -Content
 Полные HTTP-схемы и значения по умолчанию доступны в `/docs`. Основные endpoints:
 
 - `POST /v1/training` — обучение или resume;
+- `POST /v1/pretrained/prepare` — загрузка и подготовка full/LoRA/QLoRA;
 - `POST /v1/tokenizer/train` — обучение tokenizer;
 - `POST /v1/preprocessing` — preprocessing;
 - `POST /v1/dataset/split` — split по тредам;
@@ -435,6 +500,8 @@ Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:8000/v1/generate" -Content
 
 ```powershell
 .\.venv\Scripts\python.exe -m mini_llm.data.dataset --help
+.\.venv\Scripts\python.exe -m mini_llm.pretrained --help
+.\.venv\Scripts\python.exe -m mini_llm.training --help
 .\.venv\Scripts\python.exe -m mini_llm.training.overfit --help
 ```
 
@@ -450,15 +517,16 @@ Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:8000/v1/generate" -Content
 - подготовка 1024-token window с приоритетом последних context messages;
 - raw/effective token statistics по split и board;
 - PyTorch Dataset/DataLoader, causal shift и dynamic padding;
+- response-only labels/loss для custom и pretrained моделей;
 - безопасный пропуск oversized responses;
 - отдельный ручной overfit sanity-check;
 - CUDA/AMP training, AdamW, gradient clipping и validation loss;
-- periodic/best/last checkpoints и продолжение обучения.
+- periodic/best/last checkpoints и продолжение обучения;
+- Hugging Face model ID/revision/cache, full fine-tuning, LoRA и QLoRA;
 - локальный FastAPI с последовательными background jobs и генерацией по checkpoint.
 
 ## Что ещё не реализовано
 
-- labels/loss masking по ролям;
 - scheduler и gradient accumulation;
 - расширенные validation metrics и model evaluation;
 - distributed/multi-GPU training;

@@ -19,6 +19,7 @@ def test_api_registers_control_routes_without_starting_jobs() -> None:
 
     assert health().status == "ok"
     assert "/v1/training" in paths
+    assert "/v1/pretrained/prepare" in paths
     assert "/v1/tokenizer/train" in paths
     assert "/v1/generate" in paths
     assert "/v1/jobs/{job_id}" in paths

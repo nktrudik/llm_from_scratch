@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import asdict
 from pathlib import Path
 from typing import cast
 
@@ -11,7 +10,7 @@ import torch
 from torch import Tensor
 from torch.optim import Optimizer
 
-from mini_llm.modeling import DecoderOnlyTransformer, ModelConfig
+from mini_llm.modeling import CausalLMBackend
 from mini_llm.training.schemas import TrainingState
 
 
@@ -36,10 +35,9 @@ def _require_float(value: object, name: str) -> float:
 def save_checkpoint(
     path: Path,
     *,
-    model: DecoderOnlyTransformer,
+    model: CausalLMBackend,
     optimizer: Optimizer,
     scaler: torch.amp.GradScaler,
-    model_config: ModelConfig,
     training_config: Mapping[str, object],
     state: TrainingState,
 ) -> None:
@@ -47,10 +45,10 @@ def save_checkpoint(
 
     path.parent.mkdir(parents=True, exist_ok=True)
     payload: dict[str, object] = {
-        "format_version": 2,
-        "model_config": cast(dict[str, object], asdict(model_config)),
+        "format_version": 3,
+        "model_metadata": model.checkpoint_metadata,
         "training_config": dict(training_config),
-        "model_state_dict": model.state_dict(),
+        "model_state_dict": model.checkpoint_state_dict(),
         "optimizer_state_dict": optimizer.state_dict(),
         "scaler_state_dict": scaler.state_dict(),
         "epoch": state.epoch,
@@ -65,6 +63,10 @@ def save_checkpoint(
         "torch_rng_state": torch.get_rng_state(),
         "cuda_rng_state_all": torch.cuda.get_rng_state_all() if torch.cuda.is_available() else [],
     }
+    custom_config = model.checkpoint_metadata.get("model_config")
+    if isinstance(custom_config, dict):
+        # Поле сохранено для совместимости существующего custom inference.
+        payload["model_config"] = custom_config
     temporary_path = path.with_suffix(path.suffix + ".tmp")
     torch.save(payload, temporary_path)
     temporary_path.replace(path)
@@ -73,10 +75,9 @@ def save_checkpoint(
 def load_checkpoint(
     path: Path,
     *,
-    model: DecoderOnlyTransformer,
+    model: CausalLMBackend,
     optimizer: Optimizer,
     scaler: torch.amp.GradScaler,
-    model_config: ModelConfig,
     learning_rate: float,
     expected_batch_size: int,
 ) -> TrainingState:
@@ -90,12 +91,17 @@ def load_checkpoint(
         raise RuntimeError(f"Не удалось загрузить checkpoint {path}: {error}") from error
     payload = _require_mapping(payload_object, "root")
     format_version = _require_int(payload.get("format_version"), "format_version")
-    if format_version not in {1, 2}:
+    if format_version not in {1, 2, 3}:
         raise RuntimeError("Неподдерживаемая версия checkpoint")
-    saved_model_config = _require_mapping(payload.get("model_config"), "model_config")
-    expected_model_config = cast(dict[str, object], asdict(model_config))
-    if saved_model_config != expected_model_config:
-        raise RuntimeError("ModelConfig checkpoint не совпадает с текущей конфигурацией")
+    if format_version < 3:
+        saved_metadata: dict[str, object] = {
+            "backend": "custom",
+            "model_config": _require_mapping(payload.get("model_config"), "model_config"),
+        }
+    else:
+        saved_metadata = _require_mapping(payload.get("model_metadata"), "model_metadata")
+    if saved_metadata != model.checkpoint_metadata:
+        raise RuntimeError("Конфигурация model backend в checkpoint не совпадает с текущей")
 
     saved_training_config = _require_mapping(payload.get("training_config"), "training_config")
     saved_batch_size = _require_int(saved_training_config.get("batch_size"), "batch_size")
@@ -108,7 +114,7 @@ def load_checkpoint(
     model_state = cast(Mapping[str, Tensor], payload.get("model_state_dict"))
     optimizer_state = _require_mapping(payload.get("optimizer_state_dict"), "optimizer_state_dict")
     scaler_state = _require_mapping(payload.get("scaler_state_dict"), "scaler_state_dict")
-    model.load_state_dict(model_state)
+    model.load_checkpoint_state_dict(model_state)
     optimizer.load_state_dict(optimizer_state)
     scaler.load_state_dict(scaler_state)
     for group in optimizer.param_groups:

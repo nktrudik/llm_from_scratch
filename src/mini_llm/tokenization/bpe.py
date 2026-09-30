@@ -22,25 +22,13 @@ from mini_llm.data.dialogue import (
     context_role_tokens,
     iter_training_texts,
 )
+from mini_llm.data.interfaces import EncodedDialogue, OversizedResponseError
 from mini_llm.modeling.config import DEFAULT_MAX_SEQUENCE_LENGTH, ModelConfig
 from mini_llm.tokenization.config import DEFAULT_TOKENIZER_PATH
 
 
 class TokenizerError(RuntimeError):
     """Ошибка конфигурации, обучения или загрузки tokenizer."""
-
-
-class OversizedResponseError(ValueError):
-    """Response вместе с обязательными special tokens не помещается в окно."""
-
-    def __init__(self, *, response_tokens: int, max_length: int) -> None:
-        self.response_tokens = response_tokens
-        self.required_tokens = response_tokens + 1
-        self.max_length = max_length
-        super().__init__(
-            f"Response требует {self.required_tokens} tokens вместе с BOS, "
-            f"но размер окна равен {max_length}"
-        )
 
 
 class BPETokenizer:
@@ -55,6 +43,12 @@ class BPETokenizer:
         """Вернуть фактический размер vocabulary."""
 
         return self._tokenizer.get_vocab_size(with_added_tokens=True)
+
+    @property
+    def pad_token_id(self) -> int:
+        """Вернуть ID padding-токена."""
+
+        return self.token_to_id(PAD_TOKEN)
 
     def token_to_id(self, token: str) -> int:
         """Вернуть ID известного token или UNK ID."""
@@ -133,6 +127,23 @@ class BPETokenizer:
             self.encode_response(sample),
             max_length=max_length,
         )
+
+    def encode_training_window(
+        self,
+        sample: DialogueSample,
+        *,
+        max_length: int = DEFAULT_MAX_SEQUENCE_LENGTH,
+    ) -> EncodedDialogue:
+        """Закодировать окно и отметить первый текстовый токен response."""
+
+        response_ids = self.encode_response(sample)
+        token_ids = self.build_dialogue_window(
+            self.encode_context_segments(sample),
+            response_ids,
+            max_length=max_length,
+        )
+        assistant_index = len(token_ids) - len(response_ids)
+        return EncodedDialogue(token_ids, assistant_index + 1)
 
     def build_dialogue_window(
         self,

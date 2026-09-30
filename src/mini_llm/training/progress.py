@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 
-from mini_llm.data.dataset import DialogueDataset
+from mini_llm.data.dataset import IGNORE_INDEX, DialogueDataset
 
 
 @dataclass(frozen=True, slots=True)
@@ -103,11 +103,15 @@ def effective_train_tokens(
             train = splits.get("train") if isinstance(splits, dict) else None
             if (
                 payload.get("max_sequence_length") == max_sequence_length
+                and payload.get("training_objective") == "response_only"
                 and isinstance(train, dict)
                 and train.get("usable_samples") == len(dataset)
-                and isinstance(train.get("effective_tokens"), int)
+                and isinstance(train.get("training_loss_tokens"), int)
             ):
-                return cast(int, train["effective_tokens"]), str(statistics_file)
+                return cast(int, train["training_loss_tokens"]), str(statistics_file)
 
-    token_count = sum(int(dataset[index]["targets"].numel()) + 1 for index in range(len(dataset)))
+    token_count = sum(
+        int((dataset[index]["labels"] != IGNORE_INDEX).sum().item())
+        for index in range(len(dataset))
+    )
     return token_count, "расчёт по train Dataset"

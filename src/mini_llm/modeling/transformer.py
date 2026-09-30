@@ -81,10 +81,11 @@ class DecoderOnlyTransformer(nn.Module):
         if targets.shape != input_ids.shape:
             raise ValueError("targets must have the same shape as input_ids")
 
+        normalized_targets = targets.masked_fill(targets == self.config.pad_token_id, -100)
         loss = F.cross_entropy(
             logits.reshape(-1, self.config.vocab_size),
-            targets.reshape(-1),
-            ignore_index=self.config.pad_token_id,
+            normalized_targets.reshape(-1),
+            ignore_index=-100,
         )
         return logits, loss
 

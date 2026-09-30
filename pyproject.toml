@@ -27,6 +27,12 @@ dev = [
     "types-beautifulsoup4>=4.12",
     "types-requests>=2.32",
 ]
+pretrained = [
+    "accelerate>=1.2,<2",
+    "bitsandbytes>=0.45,<1",
+    "peft>=0.15,<1",
+    "transformers>=4.51,<6",
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]

@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 import torch
 
-from mini_llm.data.dataset import DataLoaderConfig, DialogueDataset, create_dataloader
+from mini_llm.data.dataset import IGNORE_INDEX, DataLoaderConfig, DialogueDataset, create_dataloader
 from mini_llm.data.dialogue import (
     ASSISTANT_TOKEN,
     BOS_TOKEN,
@@ -81,25 +81,39 @@ def test_dataset_skips_oversized_response_and_builds_shifted_sequence(tmp_path: 
     assert dataset.oversized_response_count == 1
     item = dataset[1]
     input_ids = item["input_ids"].tolist()
-    targets = item["targets"].tolist()
-    sequence = [*input_ids, targets[-1]]
-    response_ids = tokenizer.encode_response(
-        DialogueSample(
-            "b",
-            2,
-            ("Старый контекст " * 50, "ПОСЛЕДНЕЕ СООБЩЕНИЕ"),
-            "Ответ целиком",
-        )
+    labels = item["labels"].tolist()
+    sample = DialogueSample(
+        "b",
+        2,
+        ("Старый контекст " * 50, "ПОСЛЕДНЕЕ СООБЩЕНИЕ"),
+        "Ответ целиком",
     )
+    encoded = tokenizer.encode_training_window(sample, max_length=MAX_LENGTH)
+    sequence = encoded.token_ids
+    response_ids = tokenizer.encode_response(sample)
 
     assert len(sequence) <= MAX_LENGTH
-    assert input_ids[1:] == targets[:-1]
+    assert input_ids == sequence[:-1]
     assert sequence[0] == tokenizer.token_to_id(BOS_TOKEN)
     assert sequence[-1] == tokenizer.token_to_id(EOS_TOKEN)
     assert sequence[-len(response_ids)] == tokenizer.token_to_id(ASSISTANT_TOKEN)
     assert sequence[-len(response_ids) :] == response_ids
     assert tokenizer.token_to_id(USER_TOKEN) in sequence[: -len(response_ids)]
     assert _contains_subsequence(sequence, tokenizer.encode("ПОСЛЕДНЕЕ СООБЩЕНИЕ"))
+    assert labels[: encoded.response_start - 1] == [IGNORE_INDEX] * (encoded.response_start - 1)
+    assert labels[encoded.response_start - 1 :] == sequence[encoded.response_start :]
+
+
+def test_loss_labels_include_only_response_and_eos(tmp_path: Path) -> None:
+    dataset, tokenizer = _prepare_dataset(tmp_path)
+    item = dataset[0]
+    sample = DialogueSample("b", 1, ("Коротко",), "Да")
+    encoded = tokenizer.encode_training_window(sample, max_length=MAX_LENGTH)
+
+    assert int((item["labels"] != IGNORE_INDEX).sum().item()) == (
+        len(encoded.token_ids) - encoded.response_start
+    )
+    assert item["labels"][-1].item() == tokenizer.token_to_id(EOS_TOKEN)
 
 
 def test_dataloader_pads_targets_and_keeps_incomplete_last_batch(tmp_path: Path) -> None:
@@ -118,7 +132,8 @@ def test_dataloader_pads_targets_and_keeps_incomplete_last_batch(tmp_path: Path)
     assert batches[1]["input_ids"].shape[0] == 1
     padding_mask = first["input_ids"] == pad_id
     assert padding_mask.any()
-    assert torch.all(first["targets"][padding_mask] == pad_id)
+    assert torch.all(first["attention_mask"][padding_mask] == 0)
+    assert torch.all(first["labels"][padding_mask] == IGNORE_INDEX)
 
 
 def test_batch_runs_through_transformer_with_finite_loss(tmp_path: Path) -> None:

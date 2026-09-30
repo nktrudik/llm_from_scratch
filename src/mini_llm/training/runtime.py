@@ -5,9 +5,9 @@ from __future__ import annotations
 from pathlib import Path
 
 import torch
-from torch.optim import AdamW
+from torch.optim import Optimizer
 
-from mini_llm.modeling import DecoderOnlyTransformer, ModelConfig
+from mini_llm.modeling import CausalLMBackend
 from mini_llm.training.checkpoints import save_checkpoint
 from mini_llm.training.config import TrainingConfig
 from mini_llm.training.schemas import TrainingState
@@ -41,6 +41,10 @@ def training_config_payload(config: TrainingConfig) -> dict[str, object]:
         "log_interval": config.log_interval,
         "random_seed": config.random_seed,
         "mixed_precision": config.mixed_precision,
+        "model_backend": config.model_backend,
+        "pretrained_config_file": (
+            None if config.pretrained_config_file is None else str(config.pretrained_config_file)
+        ),
     }
 
 
@@ -48,10 +52,9 @@ def save_named_checkpoint(
     name: str,
     *,
     config: TrainingConfig,
-    model: DecoderOnlyTransformer,
-    optimizer: AdamW,
+    model: CausalLMBackend,
+    optimizer: Optimizer,
     scaler: torch.amp.GradScaler,
-    model_config: ModelConfig,
     state: TrainingState,
 ) -> Path:
     """Сохранить checkpoint с заданным именем в каталоге текущего запуска."""
@@ -62,7 +65,6 @@ def save_named_checkpoint(
         model=model,
         optimizer=optimizer,
         scaler=scaler,
-        model_config=model_config,
         training_config=training_config_payload(config),
         state=state,
     )

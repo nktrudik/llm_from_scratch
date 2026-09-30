@@ -7,10 +7,9 @@ import time
 import torch
 from torch.optim import AdamW
 
-from mini_llm.data.dataset import DataLoaderConfig, DialogueDataset, create_dataloader
-from mini_llm.modeling import DecoderOnlyTransformer, ModelConfig
-from mini_llm.tokenization import BPETokenizer
+from mini_llm.data.dataset import IGNORE_INDEX, DataLoaderConfig, DialogueDataset, create_dataloader
 from mini_llm.training.checkpoints import load_checkpoint
+from mini_llm.training.components import create_training_components
 from mini_llm.training.config import TrainingConfig
 from mini_llm.training.monitoring import evaluate_validation_loss, gpu_telemetry
 from mini_llm.training.progress import (
@@ -34,22 +33,18 @@ def train_model(config: TrainingConfig | None = None) -> TrainingResult:
         torch.cuda.manual_seed_all(active_config.random_seed)
         torch.cuda.reset_peak_memory_stats(device)
 
-    tokenizer = BPETokenizer.load(active_config.tokenizer_file)
-    model_config = ModelConfig()
-    if tokenizer.vocab_size != model_config.vocab_size:
-        raise RuntimeError(
-            f"Vocabulary tokenizer ({tokenizer.vocab_size}) не совпадает с ModelConfig "
-            f"({model_config.vocab_size})"
-        )
+    components = create_training_components(active_config, device)
+    tokenizer = components.tokenizer
+    model = components.model
     train_dataset = DialogueDataset(
         active_config.splits_dir / "train.jsonl",
         tokenizer,
-        max_sequence_length=model_config.max_sequence_length,
+        max_sequence_length=model.max_sequence_length,
     )
     validation_dataset = DialogueDataset(
         active_config.splits_dir / "validation.jsonl",
         tokenizer,
-        max_sequence_length=model_config.max_sequence_length,
+        max_sequence_length=model.max_sequence_length,
     )
     if len(train_dataset) == 0 or len(validation_dataset) == 0:
         raise RuntimeError("Train и validation Dataset должны содержать пригодные samples")
@@ -62,7 +57,7 @@ def train_model(config: TrainingConfig | None = None) -> TrainingResult:
     train_token_count, token_count_source = effective_train_tokens(
         active_config.token_statistics_file,
         train_dataset,
-        max_sequence_length=model_config.max_sequence_length,
+        max_sequence_length=model.max_sequence_length,
     )
 
     loader_config = DataLoaderConfig(
@@ -72,9 +67,8 @@ def train_model(config: TrainingConfig | None = None) -> TrainingResult:
         pin_memory=device.type == "cuda",
     )
     validation_loader = create_dataloader(validation_dataset, loader_config, shuffle=False)
-    model = DecoderOnlyTransformer(model_config).to(device)
     optimizer = AdamW(
-        model.parameters(),
+        model.trainable_parameters(),
         lr=active_config.learning_rate,
         weight_decay=active_config.weight_decay,
     )
@@ -86,7 +80,6 @@ def train_model(config: TrainingConfig | None = None) -> TrainingResult:
             model=model,
             optimizer=optimizer,
             scaler=scaler,
-            model_config=model_config,
             learning_rate=active_config.learning_rate,
             expected_batch_size=active_config.batch_size,
         )
@@ -102,7 +95,8 @@ def train_model(config: TrainingConfig | None = None) -> TrainingResult:
         f"Training start: device={device} ({gpu_name}), AMP={use_amp}, "
         f"train_samples={len(train_dataset)}, validation_samples={len(validation_dataset)}, "
         f"batch_size={active_config.batch_size}, max_sequence_length="
-        f"{model_config.max_sequence_length}, start_step={state.global_step}"
+        f"{model.max_sequence_length}, backend={active_config.model_backend}, "
+        f"start_step={state.global_step}"
     )
     print(
         f"Training plan: steps_per_epoch={plan.steps_per_epoch}, "
@@ -110,7 +104,6 @@ def train_model(config: TrainingConfig | None = None) -> TrainingResult:
         f"train_samples={len(train_dataset)}, effective_train_tokens={train_token_count} "
         f"(source={token_count_source})"
     )
-    pad_token_id = model_config.pad_token_id
     last_validation_step = -1
     interrupted = False
     stop_requested = False
@@ -137,26 +130,29 @@ def train_model(config: TrainingConfig | None = None) -> TrainingResult:
                     stop_requested = True
                     break
                 input_ids = batch["input_ids"].to(device, non_blocking=True)
-                targets = batch["targets"].to(device, non_blocking=True)
+                attention_mask = batch["attention_mask"].to(device, non_blocking=True)
+                labels = batch["labels"].to(device, non_blocking=True)
                 optimizer.zero_grad(set_to_none=True)
                 with torch.autocast(
                     device_type=device.type,
-                    dtype=torch.bfloat16,
+                    dtype=model.autocast_dtype,
                     enabled=use_amp,
                 ):
-                    _, loss = model(input_ids, targets)
-                scaler.scale(loss).backward()
+                    output = model.forward_batch(input_ids, attention_mask, labels)
+                torch.autograd.backward(scaler.scale(output.loss))
                 scaler.unscale_(optimizer)
-                torch.nn.utils.clip_grad_norm_(model.parameters(), active_config.gradient_clip_norm)
+                torch.nn.utils.clip_grad_norm_(
+                    model.trainable_parameters(), active_config.gradient_clip_norm
+                )
                 scaler.step(optimizer)
                 scaler.update()
 
                 state.global_step += 1
                 state.epoch = epoch
                 state.batches_completed_in_epoch = batch_index + 1
-                state.last_train_loss = loss.item()
+                state.last_train_loss = output.loss.item()
                 batch_samples = int(input_ids.size(0))
-                batch_tokens = int((targets != pad_token_id).sum().item())
+                batch_tokens = int((labels != IGNORE_INDEX).sum().item())
                 state.samples_seen += batch_samples
                 state.tokens_seen += batch_tokens
                 state.recent_train_losses.append(state.last_train_loss)
@@ -200,7 +196,7 @@ def train_model(config: TrainingConfig | None = None) -> TrainingResult:
                         validation_loader,
                         device=device,
                         use_amp=use_amp,
-                        pad_token_id=pad_token_id,
+                        amp_dtype=model.autocast_dtype,
                         max_batches=active_config.validation_batches,
                     )
                     state.last_validation_loss = validation_loss
@@ -217,7 +213,6 @@ def train_model(config: TrainingConfig | None = None) -> TrainingResult:
                             model=model,
                             optimizer=optimizer,
                             scaler=scaler,
-                            model_config=model_config,
                             state=state,
                         )
                         print(f"Best checkpoint сохранён: {best_path}")
@@ -229,7 +224,6 @@ def train_model(config: TrainingConfig | None = None) -> TrainingResult:
                         model=model,
                         optimizer=optimizer,
                         scaler=scaler,
-                        model_config=model_config,
                         state=state,
                     )
                     print(f"Checkpoint сохранён: {checkpoint_path}")
@@ -252,7 +246,7 @@ def train_model(config: TrainingConfig | None = None) -> TrainingResult:
             validation_loader,
             device=device,
             use_amp=use_amp,
-            pad_token_id=pad_token_id,
+            amp_dtype=model.autocast_dtype,
             max_batches=active_config.validation_batches,
         )
         state.last_validation_loss = validation_loss
@@ -264,7 +258,6 @@ def train_model(config: TrainingConfig | None = None) -> TrainingResult:
                 model=model,
                 optimizer=optimizer,
                 scaler=scaler,
-                model_config=model_config,
                 state=state,
             )
         print(f"final validation_loss={validation_loss:.6f}")
@@ -275,7 +268,6 @@ def train_model(config: TrainingConfig | None = None) -> TrainingResult:
         model=model,
         optimizer=optimizer,
         scaler=scaler,
-        model_config=model_config,
         state=state,
     )
     print(

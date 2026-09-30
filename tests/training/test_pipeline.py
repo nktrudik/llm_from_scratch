@@ -6,7 +6,7 @@ import pytest
 import torch
 from torch.optim import AdamW
 
-from mini_llm.modeling import DecoderOnlyTransformer, ModelConfig
+from mini_llm.modeling import CustomCausalLMBackend, DecoderOnlyTransformer, ModelConfig
 from mini_llm.training import TrainingConfig
 from mini_llm.training.checkpoints import load_checkpoint, save_checkpoint
 from mini_llm.training.overfit import OverfitConfig
@@ -76,6 +76,7 @@ def test_training_progress_contains_seen_counts_and_epoch_percentage() -> None:
 def test_checkpoint_restores_model_optimizer_and_training_state(tmp_path: Path) -> None:
     config = _small_config()
     model = DecoderOnlyTransformer(config)
+    backend = CustomCausalLMBackend(model, config)
     optimizer = AdamW(model.parameters(), lr=1e-3)
     scaler = torch.amp.GradScaler("cuda", enabled=False)
     input_ids = torch.randint(6, config.vocab_size, (2, 8))
@@ -98,23 +99,22 @@ def test_checkpoint_restores_model_optimizer_and_training_state(tmp_path: Path) 
     checkpoint_path = tmp_path / "checkpoint.pt"
     save_checkpoint(
         checkpoint_path,
-        model=model,
+        model=backend,
         optimizer=optimizer,
         scaler=scaler,
-        model_config=config,
         training_config={"batch_size": 1},
         state=state,
     )
 
     restored_model = DecoderOnlyTransformer(config)
+    restored_backend = CustomCausalLMBackend(restored_model, config)
     restored_optimizer = AdamW(restored_model.parameters(), lr=9e-4)
     restored_scaler = torch.amp.GradScaler("cuda", enabled=False)
     restored_state = load_checkpoint(
         checkpoint_path,
-        model=restored_model,
+        model=restored_backend,
         optimizer=restored_optimizer,
         scaler=restored_scaler,
-        model_config=config,
         learning_rate=5e-4,
         expected_batch_size=1,
     )
