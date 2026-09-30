@@ -3,11 +3,11 @@
 Учебный проект компактной decoder-only Transformer-модели на PyTorch и последовательного
 pipeline подготовки текстовых диалогов из тредов 2ch. Репозиторий содержит сборщик JSON API,
 preprocessing графа ответов, разбиение датасета по тредам, обучение собственного byte-level BPE
-tokenizer и расчёт token statistics.
+tokenizer, расчёт token statistics и однопроцессное обучение модели на CUDA.
 
-В проекте пока нет полноценного training loop, checkpoint, scheduler, production validation,
-оценки качества модели и текстового интерфейса. Реализованная модель не обучена и не умеет
-осмысленно отвечать.
+В проекте пока нет distributed training, scheduler, production model evaluation и текстового
+интерфейса. Код обучения реализован, но сама модель в репозитории не обучена и не умеет осмысленно
+отвечать.
 
 ## Установка и VS Code
 
@@ -34,11 +34,11 @@ uv sync --extra dev
 - `d_model = 256`;
 - 4 attention heads;
 - FFN размером 1024;
-- максимальный контекст 512 token IDs;
+- максимальный контекст 1024 token IDs;
 - vocabulary size 8192;
 - pre-LayerNorm, residual connections и настраиваемый dropout;
 - общие веса token embedding и выходной проекции;
-- 5 387 776 обучаемых параметров.
+- 5 518 848 обучаемых параметров.
 
 Special token IDs зафиксированы в `ModelConfig`:
 
@@ -78,7 +78,9 @@ src/mini_llm/
 ├── bpe_tokenizer.py         # обучение, сохранение и загрузка BPE
 ├── token_statistics.py      # raw/effective token statistics
 ├── data_pipeline.py         # PyTorch Dataset, padding и DataLoader
-└── overfit_test.py          # отдельный ручной sanity-check обучения
+├── overfit_test.py          # отдельный ручной sanity-check обучения
+├── training_checkpoint.py   # checkpoint serialization и resume state
+└── training.py              # CUDA/AMP training и validation
 
 data/raw/2ch/<board>/         # неизменяемые raw JSON тредов
 data/processed/               # dialogue dataset, split и отчёты
@@ -126,7 +128,7 @@ Scraper использует JSON API, не скачивает вложения 
   `messages_dropped_without_reliable_parent` и `thread_root_fallback_samples_prevented`;
 - `data/processed/2ch_review_sample.jsonl` — детерминированная выборка для ручной проверки.
 
-Raw-файлы не меняются. Длинные samples не удаляются и не обрезаются до 512 tokens. Имеющийся
+Raw-файлы не меняются. Длинные samples не удаляются и не обрезаются до 1024 tokens. Имеющийся
 processed dataset, созданный старой версией, нужно пересоздать этой командой, иначе в нём останутся
 samples с `thread_root_fallback`.
 
@@ -187,7 +189,7 @@ text = tokenizer.decode(token_ids)
 ```
 
 Для длинной цепочки более ранние context messages получают чередующиеся роли так, чтобы последнее
-сообщение перед response всегда имело `<USER>`. `encode_dialogue_window(..., max_length=512)`
+сообщение перед response всегда имело `<USER>`. `encode_dialogue_window(..., max_length=1024)`
 сохраняет response целиком и заполняет остаток окна последними context messages. Если полный
 response сам не помещается, метод возвращает ошибку вместо скрытого обрезания.
 
@@ -199,7 +201,7 @@ response сам не помещается, метод возвращает ош�
 После обучения tokenizer:
 
 ```powershell
-.\.venv\Scripts\python.exe -m mini_llm.token_statistics
+.\.venv\Scripts\python.exe -m mini_llm.token_statistics --max-sequence-length 1024
 ```
 
 Этап читает три файла из `data/processed/splits/` и готовый
@@ -223,7 +225,7 @@ response сам не помещается, метод возвращает ош�
 - статистику по board.
 
 `effective_train_tokens` — число token IDs в пригодных train windows после сохранения полного
-response и сокращения context до лимита 512. Validation/test не входят в
+response и сокращения context до лимита 1024. Validation/test не входят в
 `effective_train_tokens_per_parameter`. Oversized response не обрезается, даёт ноль effective
 tokens и остаётся в исходном split JSONL.
 
@@ -241,7 +243,7 @@ train / validation / test JSONL
     ↓
 DialogueDataset
     ├── пропуск oversized responses
-    └── окно ≤ 512 с приоритетом последних context messages
+    └── окно ≤ 1024 с приоритетом последних context messages
     ↓
 shift: input_ids = sequence[:-1], targets = sequence[1:]
     ↓
@@ -258,7 +260,8 @@ DecoderOnlyTransformer(input_ids, targets)
 `targets` сдвинуты на один token относительно `input_ids`. Collator дополняет обе последовательности
 справа через `<PAD>`; padded targets игнорируются существующим `cross_entropy`, поскольку модель
 использует `ignore_index=pad_token_id`. Train DataLoader включает deterministic shuffle,
-validation/test создаются без shuffle, последний неполный batch сохраняется.
+validation/test создаются без shuffle, последний неполный batch сохраняется. `batch_size` может
+быть только от 1 до 4; большее значение отклоняется до запуска.
 
 Быстрая проверка восьми пригодных train samples и одного CPU batch:
 
@@ -278,12 +281,41 @@ resume, distributed training или полного прохода по корп�
 Ручной запуск на GPU:
 
 ```powershell
-.\.venv\Scripts\python.exe -m mini_llm.overfit_test --device cuda --samples 32 --batch-size 4 --steps 200 --learning-rate 0.0003
+.\.venv\Scripts\python.exe -m mini_llm.overfit_test --device cuda --samples 16 --batch-size 1 --steps 50 --learning-rate 0.0003
 ```
 
 Команда читает `train.jsonl` и готовый tokenizer, создаёт новую модель только в памяти и печатает
 loss. Она использует CPU/RAM для Dataset и GPU/VRAM для модели и batch; автоматически не запускается
 и ничего не сохраняет.
+
+## Полноценное обучение
+
+`mini_llm.training` обучает модель на `train.jsonl` и периодически считает token-weighted loss на
+`validation.jsonl`. Реализованы CUDA, AdamW, automatic mixed precision, gradient clipping,
+terminal progress, tokens/sec и GPU telemetry: имя GPU, allocated/reserved/peak VRAM.
+
+Для RTX 3050 4 GB рекомендуется начинать с `batch_size=1`:
+
+```powershell
+.\.venv\Scripts\python.exe -m mini_llm.training --device cuda --batch-size 1 --epochs 3 --max-steps 10000 --learning-rate 0.0003 --validation-interval 200 --validation-batches 25 --checkpoint-interval 500 --log-interval 10 --num-workers 0
+```
+
+Trainer создаёт в `checkpoints/training/`:
+
+- `step_XXXXXXXX.pt` — периодические checkpoints;
+- `best.pt` — checkpoint с минимальным validation loss;
+- `last.pt` — последнее состояние при нормальном завершении или `Ctrl+C`.
+
+Checkpoint содержит веса модели, AdamW state, AMP GradScaler, global step, epoch/batch position,
+лучший validation loss и RNG state. Продолжение с увеличенным общим лимитом steps:
+
+```powershell
+.\.venv\Scripts\python.exe -m mini_llm.training --device cuda --resume-from checkpoints/training/last.pt --batch-size 1 --epochs 6 --max-steps 20000 --learning-rate 0.0003 --validation-interval 200 --validation-batches 25 --checkpoint-interval 500 --log-interval 10 --num-workers 0
+```
+
+`--epochs` и `--max-steps` задают общие, а не дополнительные лимиты. Learning rate из команды при
+resume заменяет сохранённый learning rate optimizer. AMP включён по умолчанию; `--no-amp` оставлен
+для диагностики, но на GPU с 4 GB обычно не рекомендуется.
 
 ## Изменение путей и параметров
 
@@ -296,6 +328,7 @@ loss. Она использует CPU/RAM для Dataset и GPU/VRAM для мо
 .\.venv\Scripts\python.exe -m mini_llm.token_statistics --help
 .\.venv\Scripts\python.exe -m mini_llm.data_pipeline --help
 .\.venv\Scripts\python.exe -m mini_llm.overfit_test --help
+.\.venv\Scripts\python.exe -m mini_llm.training --help
 ```
 
 Основные параметры:
@@ -307,6 +340,8 @@ loss. Она использует CPU/RAM для Dataset и GPU/VRAM для мо
   `--max-sequence-length`.
 - Dataset smoke-check: `--split`, `--batch-size`, `--num-workers`, `--seed`, `--max-samples`;
 - overfit test: `--samples`, `--batch-size`, `--steps`, `--learning-rate`, `--device`.
+- training: `--batch-size`, `--epochs`, `--max-steps`, `--learning-rate`,
+  `--validation-interval`, `--checkpoint-interval`, `--resume-from`, `--seed`.
 
 ## Что уже реализовано
 
@@ -317,18 +352,20 @@ loss. Она использует CPU/RAM для Dataset и GPU/VRAM для мо
 - очистка PII, exact/near deduplication и отчёт preprocessing;
 - детерминированный thread-level split без leakage;
 - byte-level BPE, encode/decode, save/load и role tokens;
-- подготовка 512-token window с приоритетом последних context messages;
+- подготовка 1024-token window с приоритетом последних context messages;
 - raw/effective token statistics по split и board;
 - PyTorch Dataset/DataLoader, causal shift и dynamic padding;
 - безопасный пропуск oversized responses;
-- отдельный ручной overfit sanity-check.
+- отдельный ручной overfit sanity-check;
+- CUDA/AMP training, AdamW, gradient clipping и validation loss;
+- periodic/best/last checkpoints и продолжение обучения.
 
 ## Что ещё не реализовано
 
 - labels/loss masking по ролям;
-- полноценный training loop, scheduler и mixed precision;
-- checkpoints и возобновление обучения;
-- validation metrics и model evaluation;
+- scheduler и gradient accumulation;
+- расширенные validation metrics и model evaluation;
+- distributed/multi-GPU training;
 - преобразование пользовательского текста в dialogue prompt;
 - CLI или веб-интерфейс для inference.
 

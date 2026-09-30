@@ -40,6 +40,8 @@ class OverfitConfig:
         for name, value in positive_values.items():
             if value <= 0:
                 raise ValueError(f"{name} должен быть положительным")
+        if self.batch_size > 4:
+            raise ValueError("batch_size должен быть в диапазоне от 1 до 4")
         if self.learning_rate <= 0.0:
             raise ValueError("learning_rate должен быть положительным")
         if self.num_workers < 0:

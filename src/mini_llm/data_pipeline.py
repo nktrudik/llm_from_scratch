@@ -20,7 +20,7 @@ from mini_llm.bpe_tokenizer import (
     BPETokenizer,
     OversizedResponseError,
 )
-from mini_llm.config import ModelConfig
+from mini_llm.config import DEFAULT_MAX_SEQUENCE_LENGTH, ModelConfig
 from mini_llm.dataset_split import SPLIT_NAMES
 from mini_llm.dialogue_format import (
     PAD_TOKEN,
@@ -48,14 +48,14 @@ class CausalLMBatch(TypedDict):
 class DataLoaderConfig:
     """Минимальные настройки batching и воспроизводимого shuffle."""
 
-    batch_size: int = 8
+    batch_size: int = 2
     num_workers: int = 0
     random_seed: int = 42
     pin_memory: bool = False
 
     def __post_init__(self) -> None:
-        if self.batch_size <= 0:
-            raise ValueError("batch_size должен быть положительным")
+        if not 1 <= self.batch_size <= 4:
+            raise ValueError("batch_size должен быть в диапазоне от 1 до 4")
         if self.num_workers < 0:
             raise ValueError("num_workers не может быть отрицательным")
 
@@ -68,7 +68,7 @@ class DialogueDataset(Dataset[CausalLMItem]):
         split_file: Path,
         tokenizer: BPETokenizer,
         *,
-        max_sequence_length: int = 512,
+        max_sequence_length: int = DEFAULT_MAX_SEQUENCE_LENGTH,
         max_samples: int | None = None,
     ) -> None:
         if max_sequence_length <= 1:
@@ -226,7 +226,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument("--num-workers", type=int, default=0)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--max-samples", type=int, default=8)
-    parser.add_argument("--max-sequence-length", type=int, default=512)
+    parser.add_argument("--max-sequence-length", type=int, default=DEFAULT_MAX_SEQUENCE_LENGTH)
     return parser
 
 

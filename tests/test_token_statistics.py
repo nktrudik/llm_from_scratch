@@ -62,7 +62,7 @@ def test_token_statistics_separates_raw_effective_and_oversized(tmp_path: Path) 
     effective_lengths = cast(dict[str, object], train["effective_sequence_lengths"])
 
     assert output_path.is_file()
-    assert report["model_parameters"] == 5_387_776
+    assert report["model_parameters"] == 5_518_848
     assert cast(int, report["raw_full_tokens"]) > cast(int, report["effective_tokens"])
     assert train["unusable_oversized_response_samples"] == 1
     assert cast(int, train_context["dropped_tokens"]) > 0
@@ -73,7 +73,7 @@ def test_token_statistics_separates_raw_effective_and_oversized(tmp_path: Path) 
     assert train_response["responses_over_max_sequence_length"] == 1
     assert cast(dict[str, object], report["oversized_responses_by_board"])["b"] == 1
     assert report["effective_train_tokens"] == train["effective_tokens"]
-    expected_ratio = cast(int, train["effective_tokens"]) / 5_387_776
+    expected_ratio = cast(int, train["effective_tokens"]) / 5_518_848
     assert report["effective_train_tokens_per_parameter"] == round(expected_ratio, 6)
     assert cast(int, split_report["validation"]["effective_tokens"]) > 0
     assert cast(int, split_report["test"]["effective_tokens"]) > 0

@@ -78,9 +78,18 @@ def test_generate_appends_requested_number_of_token_ids() -> None:
 
 
 def test_default_parameter_count_is_in_expected_range() -> None:
-    model = DecoderOnlyTransformer(ModelConfig())
+    config = ModelConfig()
+    model = DecoderOnlyTransformer(config)
 
-    assert 5_000_000 <= model.num_parameters() <= 5_500_000
+    assert config.max_sequence_length == 1024
+    assert model.position_embeddings.num_embeddings == 1024
+    assert dict(model.named_buffers())["blocks.0.attention.causal_mask"].shape == (
+        1,
+        1,
+        1024,
+        1024,
+    )
+    assert model.num_parameters() == 5_518_848
     assert model.output_projection.weight is model.token_embeddings.weight
 
 

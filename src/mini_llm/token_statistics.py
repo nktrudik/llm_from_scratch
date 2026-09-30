@@ -15,7 +15,7 @@ from mini_llm.bpe_tokenizer import (
     OversizedResponseError,
     TokenizerError,
 )
-from mini_llm.config import ModelConfig
+from mini_llm.config import DEFAULT_MAX_SEQUENCE_LENGTH, ModelConfig
 from mini_llm.dataset_split import SPLIT_NAMES
 from mini_llm.dialogue_format import (
     BOS_TOKEN,
@@ -35,7 +35,7 @@ class TokenStatisticsConfig:
     splits_dir: Path = Path("data/processed/splits")
     tokenizer_file: Path = DEFAULT_TOKENIZER_PATH
     output_file: Path = Path("data/processed/token_statistics.json")
-    max_sequence_length: int = 512
+    max_sequence_length: int = DEFAULT_MAX_SEQUENCE_LENGTH
 
     def __post_init__(self) -> None:
         if self.max_sequence_length <= 0:
@@ -337,7 +337,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--output-file", type=Path, default=Path("data/processed/token_statistics.json")
     )
-    parser.add_argument("--max-sequence-length", type=int, default=512)
+    parser.add_argument("--max-sequence-length", type=int, default=DEFAULT_MAX_SEQUENCE_LENGTH)
     return parser
 
 

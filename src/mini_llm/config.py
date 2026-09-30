@@ -2,13 +2,15 @@
 
 from dataclasses import dataclass
 
+DEFAULT_MAX_SEQUENCE_LENGTH = 1024
+
 
 @dataclass(frozen=True, slots=True)
 class ModelConfig:
     """Hyperparameters and special token IDs for the model architecture."""
 
     vocab_size: int = 8192
-    max_sequence_length: int = 512
+    max_sequence_length: int = DEFAULT_MAX_SEQUENCE_LENGTH
     num_layers: int = 4
     d_model: int = 256
     num_heads: int = 4

@@ -3,6 +3,7 @@
 import json
 from pathlib import Path
 
+import pytest
 import torch
 
 from mini_llm.bpe_tokenizer import BPETokenizer, train_bpe_tokenizer
@@ -18,6 +19,15 @@ from mini_llm.dialogue_format import (
 from mini_llm.model import DecoderOnlyTransformer
 
 MAX_LENGTH = 40
+
+
+def test_batch_size_is_limited_to_four() -> None:
+    assert DataLoaderConfig(batch_size=1).batch_size == 1
+    assert DataLoaderConfig(batch_size=4).batch_size == 4
+    with pytest.raises(ValueError, match="от 1 до 4"):
+        DataLoaderConfig(batch_size=0)
+    with pytest.raises(ValueError, match="от 1 до 4"):
+        DataLoaderConfig(batch_size=5)
 
 
 def _sample(thread_id: int, context: list[str], response: str) -> dict[str, object]:

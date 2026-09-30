@@ -8,7 +8,7 @@ from pathlib import Path
 
 from tokenizers import Tokenizer, decoders, models, pre_tokenizers, trainers
 
-from mini_llm.config import ModelConfig
+from mini_llm.config import DEFAULT_MAX_SEQUENCE_LENGTH, ModelConfig
 from mini_llm.dialogue_format import (
     ASSISTANT_TOKEN,
     BOS_TOKEN,
@@ -124,7 +124,9 @@ class BPETokenizer:
             *self.encode_response(sample),
         ]
 
-    def encode_dialogue_window(self, sample: DialogueSample, *, max_length: int = 512) -> list[int]:
+    def encode_dialogue_window(
+        self, sample: DialogueSample, *, max_length: int = DEFAULT_MAX_SEQUENCE_LENGTH
+    ) -> list[int]:
         """Сохранить response целиком и заполнить окно последними context messages."""
 
         return self.build_dialogue_window(
@@ -138,7 +140,7 @@ class BPETokenizer:
         context_segments: Sequence[Sequence[int]],
         response_ids: Sequence[int],
         *,
-        max_length: int = 512,
+        max_length: int = DEFAULT_MAX_SEQUENCE_LENGTH,
     ) -> list[int]:
         """Собрать окно из уже закодированных частей по единой политике truncation."""
 
