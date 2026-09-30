@@ -31,6 +31,19 @@ class TokenizerError(RuntimeError):
     """Ошибка конфигурации, обучения или загрузки tokenizer."""
 
 
+class OversizedResponseError(ValueError):
+    """Response вместе с обязательными special tokens не помещается в окно."""
+
+    def __init__(self, *, response_tokens: int, max_length: int) -> None:
+        self.response_tokens = response_tokens
+        self.required_tokens = response_tokens + 1
+        self.max_length = max_length
+        super().__init__(
+            f"Response требует {self.required_tokens} tokens вместе с BOS, "
+            f"но размер окна равен {max_length}"
+        )
+
+
 class BPETokenizer:
     """Тонкая типизированная оболочка над Hugging Face Tokenizers."""
 
@@ -80,12 +93,18 @@ class BPETokenizer:
     def encode_context(self, sample: DialogueSample) -> list[int]:
         """Закодировать context вместе с role tokens."""
 
-        token_ids: list[int] = []
+        return [
+            token_id for segment in self.encode_context_segments(sample) for token_id in segment
+        ]
+
+    def encode_context_segments(self, sample: DialogueSample) -> list[list[int]]:
+        """Закодировать context отдельными role-prefixed messages."""
+
+        segments: list[list[int]] = []
         roles = context_role_tokens(len(sample.context))
         for role, text in zip(roles, sample.context, strict=True):
-            token_ids.append(self.token_to_id(role))
-            token_ids.extend(self.encode(text))
-        return token_ids
+            segments.append([self.token_to_id(role), *self.encode(text)])
+        return segments
 
     def encode_response(self, sample: DialogueSample) -> list[int]:
         """Закодировать response с ASSISTANT и завершающим EOS."""
@@ -108,25 +127,37 @@ class BPETokenizer:
     def encode_dialogue_window(self, sample: DialogueSample, *, max_length: int = 512) -> list[int]:
         """Сохранить response целиком и заполнить окно последними context messages."""
 
+        return self.build_dialogue_window(
+            self.encode_context_segments(sample),
+            self.encode_response(sample),
+            max_length=max_length,
+        )
+
+    def build_dialogue_window(
+        self,
+        context_segments: Sequence[Sequence[int]],
+        response_ids: Sequence[int],
+        *,
+        max_length: int = 512,
+    ) -> list[int]:
+        """Собрать окно из уже закодированных частей по единой политике truncation."""
+
         if max_length <= 0:
             raise ValueError("max_length должен быть положительным")
         bos_id = self.token_to_id(BOS_TOKEN)
-        response_ids = self.encode_response(sample)
         if len(response_ids) + 1 > max_length:
-            raise ValueError("Response целиком не помещается в заданное token window")
+            raise OversizedResponseError(response_tokens=len(response_ids), max_length=max_length)
 
         remaining = max_length - len(response_ids) - 1
         selected: list[list[int]] = []
-        roles = context_role_tokens(len(sample.context))
-        for role, text in reversed(list(zip(roles, sample.context, strict=True))):
-            text_ids = self.encode(text)
-            segment = [self.token_to_id(role), *text_ids]
+        for encoded_segment in reversed(context_segments):
+            segment = list(encoded_segment)
             if len(segment) <= remaining:
                 selected.append(segment)
                 remaining -= len(segment)
                 continue
             if remaining >= 2:
-                selected.append([segment[0], *text_ids[-(remaining - 1) :]])
+                selected.append([segment[0], *segment[-(remaining - 1) :]])
             break
 
         context_ids = [token_id for segment in reversed(selected) for token_id in segment]

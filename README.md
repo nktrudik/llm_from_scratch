@@ -5,8 +5,9 @@ pipeline подготовки текстовых диалогов из тред�
 preprocessing графа ответов, разбиение датасета по тредам, обучение собственного byte-level BPE
 tokenizer и расчёт token statistics.
 
-В проекте пока нет training loop, checkpoint, optimizer, batching, оценки качества модели и
-текстового интерфейса. Реализованная модель не обучена и не умеет осмысленно отвечать.
+В проекте пока нет полноценного training loop, checkpoint, scheduler, production validation,
+оценки качества модели и текстового интерфейса. Реализованная модель не обучена и не умеет
+осмысленно отвечать.
 
 ## Установка и VS Code
 
@@ -75,7 +76,9 @@ src/mini_llm/
 ├── dialogue_format.py       # схема JSONL и role-token serialization
 ├── dataset_split.py         # train/validation/test по тредам
 ├── bpe_tokenizer.py         # обучение, сохранение и загрузка BPE
-└── token_statistics.py      # отчёт по token lengths и vocabulary
+├── token_statistics.py      # raw/effective token statistics
+├── data_pipeline.py         # PyTorch Dataset, padding и DataLoader
+└── overfit_test.py          # отдельный ручной sanity-check обучения
 
 data/raw/2ch/<board>/         # неизменяемые raw JSON тредов
 data/processed/               # dialogue dataset, split и отчёты
@@ -206,17 +209,81 @@ response сам не помещается, метод возвращает ош�
 Отчёт содержит:
 
 - фактический vocabulary size;
-- tokens в train, validation, test и суммарно;
-- tokens per parameter для текущей модели;
+- raw/full tokens до ограничения окна;
+- effective tokens после формирования допустимых окон;
+- raw и effective tokens отдельно для train, validation и test;
+- `effective_train_tokens_per_parameter`, рассчитанный только по train;
 - characters per token;
-- min, mean, median, p90, p95 и max длины samples;
-- количество и долю samples `<= 512` и `> 512`;
-- отдельные длины и объёмы context/response;
+- min, mean, median, p90, p95 и max raw/effective lengths;
+- число полных и коротких effective windows;
+- raw, effective и отброшенные context tokens, процент потерь и число сокращённых samples;
+- отдельное распределение response lengths;
+- unusable oversized responses и их распределение по board;
 - количество и долю `<UNK>`;
 - статистику по board.
 
+`effective_train_tokens` — число token IDs в пригодных train windows после сохранения полного
+response и сокращения context до лимита 512. Validation/test не входят в
+`effective_train_tokens_per_parameter`. Oversized response не обрезается, даёт ноль effective
+tokens и остаётся в исходном split JSONL.
+
 Этап ничего не удаляет и не создаёт tokenized training dataset. Ресурсы: CPU и последовательное
 чтение диска; RAM используется для массивов длин samples. GPU не используется и не требуется.
+
+## Архитектура PyTorch data pipeline
+
+```text
+processed JSONL
+    ↓
+train / validation / test JSONL
+    ↓
+готовый BPE tokenizer
+    ↓
+DialogueDataset
+    ├── пропуск oversized responses
+    └── окно ≤ 512 с приоритетом последних context messages
+    ↓
+shift: input_ids = sequence[:-1], targets = sequence[1:]
+    ↓
+collate + padding внутри batch
+    ↓
+DecoderOnlyTransformer(input_ids, targets)
+```
+
+`DialogueDataset` хранит в RAM только byte offsets пригодных JSONL-строк. Токенизация выполняется
+при чтении sample, а весь датасет заранее в GPU memory не переносится. Responses, которые вместе с
+обязательными `<BOS>`, `<ASSISTANT>` и `<EOS>` не помещаются в окно, безопасно пропускаются и
+считаются в `oversized_response_count`.
+
+`targets` сдвинуты на один token относительно `input_ids`. Collator дополняет обе последовательности
+справа через `<PAD>`; padded targets игнорируются существующим `cross_entropy`, поскольку модель
+использует `ignore_index=pad_token_id`. Train DataLoader включает deterministic shuffle,
+validation/test создаются без shuffle, последний неполный batch сохраняется.
+
+Быстрая проверка восьми пригодных train samples и одного CPU batch:
+
+```powershell
+.\.venv\Scripts\python.exe -m mini_llm.data_pipeline --split train --max-samples 8 --batch-size 2
+```
+
+Команда читает готовые `data/processed/splits/train.jsonl` и
+`artifacts/tokenizer/2ch_bpe.json`, но не обучает модель. GPU не используется.
+
+## Ручной overfit sanity-check
+
+Отдельный модуль позволяет проверить, уменьшается ли loss при многократном обучении на первых 32
+пригодных train samples. Это не production trainer: в нём нет checkpoint, scheduler, validation,
+resume, distributed training или полного прохода по корпусу.
+
+Ручной запуск на GPU:
+
+```powershell
+.\.venv\Scripts\python.exe -m mini_llm.overfit_test --device cuda --samples 32 --batch-size 4 --steps 200 --learning-rate 0.0003
+```
+
+Команда читает `train.jsonl` и готовый tokenizer, создаёт новую модель только в памяти и печатает
+loss. Она использует CPU/RAM для Dataset и GPU/VRAM для модели и batch; автоматически не запускается
+и ничего не сохраняет.
 
 ## Изменение путей и параметров
 
@@ -227,6 +294,8 @@ response сам не помещается, метод возвращает ош�
 .\.venv\Scripts\python.exe -m mini_llm.dataset_split --help
 .\.venv\Scripts\python.exe -m mini_llm.bpe_tokenizer --help
 .\.venv\Scripts\python.exe -m mini_llm.token_statistics --help
+.\.venv\Scripts\python.exe -m mini_llm.data_pipeline --help
+.\.venv\Scripts\python.exe -m mini_llm.overfit_test --help
 ```
 
 Основные параметры:
@@ -236,6 +305,8 @@ response сам не помещается, метод возвращает ош�
 - tokenizer: `--train-file`, `--output-file`, `--vocab-size`, `--min-frequency`;
 - statistics: `--splits-dir`, `--tokenizer-file`, `--output-file`,
   `--max-sequence-length`.
+- Dataset smoke-check: `--split`, `--batch-size`, `--num-workers`, `--seed`, `--max-samples`;
+- overfit test: `--samples`, `--batch-size`, `--steps`, `--learning-rate`, `--device`.
 
 ## Что уже реализовано
 
@@ -247,13 +318,15 @@ response сам не помещается, метод возвращает ош�
 - детерминированный thread-level split без leakage;
 - byte-level BPE, encode/decode, save/load и role tokens;
 - подготовка 512-token window с приоритетом последних context messages;
-- token statistics по split и board.
+- raw/effective token statistics по split и board;
+- PyTorch Dataset/DataLoader, causal shift и dynamic padding;
+- безопасный пропуск oversized responses;
+- отдельный ручной overfit sanity-check.
 
 ## Что ещё не реализовано
 
-- PyTorch Dataset/DataLoader и окончательная подготовка training batches;
 - labels/loss masking по ролям;
-- training loop, optimizer, scheduler и mixed precision;
+- полноценный training loop, scheduler и mixed precision;
 - checkpoints и возобновление обучения;
 - validation metrics и model evaluation;
 - преобразование пользовательского текста в dialogue prompt;
