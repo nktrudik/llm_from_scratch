@@ -292,13 +292,21 @@ loss. Она использует CPU/RAM для Dataset и GPU/VRAM для мо
 
 `mini_llm.training` обучает модель на `train.jsonl` и периодически считает token-weighted loss на
 `validation.jsonl`. Реализованы CUDA, AdamW, automatic mixed precision, gradient clipping,
-terminal progress, tokens/sec и GPU telemetry: имя GPU, allocated/reserved/peak VRAM.
+terminal progress, tokens/sec и GPU telemetry: имя GPU, allocated/reserved/peak VRAM. При старте
+печатаются `steps_per_epoch`, `planned_total_steps`, число train samples и effective train tokens.
+Во время обучения выводятся `samples_seen`, `tokens_seen`, процент текущей эпохи, текущий loss и
+rolling average loss по последним 100 шагам.
 
-Для RTX 3050 4 GB рекомендуется начинать с `batch_size=1`:
+Полное обучение с нуля на RTX 3050 4 GB и всём train split:
 
 ```powershell
-.\.venv\Scripts\python.exe -m mini_llm.training --device cuda --batch-size 1 --epochs 3 --max-steps 10000 --learning-rate 0.0003 --validation-interval 200 --validation-batches 25 --checkpoint-interval 500 --log-interval 10 --num-workers 0
+.\.venv\Scripts\python.exe -m mini_llm.training --device cuda --batch-size 4 --epochs 3 --learning-rate 0.0003 --validation-interval 1000 --validation-batches 200 --checkpoint-interval 1000 --log-interval 10 --num-workers 0
 ```
+
+`--epochs 3` означает ровно три полных прохода по train dataset. Альтернативный `--max-steps`
+нужен только для явно ограниченного запуска; CLI не позволяет одновременно передать оба аргумента,
+поэтому лимит шагов не может незаметно оборвать заданные эпохи. Значения по умолчанию:
+`batch_size=4`, validation каждые 1000 шагов и до 200 validation batches.
 
 Trainer создаёт в `checkpoints/training/`:
 
@@ -306,16 +314,27 @@ Trainer создаёт в `checkpoints/training/`:
 - `best.pt` — checkpoint с минимальным validation loss;
 - `last.pt` — последнее состояние при нормальном завершении или `Ctrl+C`.
 
-Checkpoint содержит веса модели, AdamW state, AMP GradScaler, global step, epoch/batch position,
-лучший validation loss и RNG state. Продолжение с увеличенным общим лимитом steps:
+Checkpoint содержит веса модели, AdamW state, AMP GradScaler, global step, точную epoch/batch
+position, `samples_seen`, `tokens_seen`, окно последних loss, лучший validation loss и RNG state.
+Для точного продолжения текущей эпохи `batch_size` должен совпадать с сохранённым. Продолжение из
+последнего checkpoint до общего числа шести эпох:
 
 ```powershell
-.\.venv\Scripts\python.exe -m mini_llm.training --device cuda --resume-from checkpoints/training/last.pt --batch-size 1 --epochs 6 --max-steps 20000 --learning-rate 0.0003 --validation-interval 200 --validation-batches 25 --checkpoint-interval 500 --log-interval 10 --num-workers 0
+.\.venv\Scripts\python.exe -m mini_llm.training --device cuda --resume-from checkpoints/training/last.pt --batch-size 4 --epochs 6 --learning-rate 0.0003 --validation-interval 1000 --validation-batches 200 --checkpoint-interval 1000 --log-interval 10 --num-workers 0
 ```
 
-`--epochs` и `--max-steps` задают общие, а не дополнительные лимиты. Learning rate из команды при
-resume заменяет сохранённый learning rate optimizer. AMP включён по умолчанию; `--no-amp` оставлен
-для диагностики, но на GPU с 4 GB обычно не рекомендуется.
+Продолжение из checkpoint с лучшим validation loss:
+
+```powershell
+.\.venv\Scripts\python.exe -m mini_llm.training --device cuda --resume-from checkpoints/training/best.pt --checkpoint-dir checkpoints/training_from_best --batch-size 4 --epochs 6 --learning-rate 0.0003 --validation-interval 1000 --validation-batches 200 --checkpoint-interval 1000 --log-interval 10 --num-workers 0
+```
+
+Число эпох при resume — общий целевой номер, а не число дополнительных эпох. Learning rate из
+команды заменяет сохранённый learning rate optimizer. AMP включён по умолчанию; `--no-amp`
+оставлен для диагностики, но на GPU с 4 GB обычно не рекомендуется. Если актуального
+`token_statistics.json` нет, trainer один раз считает effective train tokens через Dataset перед
+стартом обучения. Отдельный `training_from_best` сохраняет исходную ветку checkpoints без
+перезаписи.
 
 ## Изменение путей и параметров
 

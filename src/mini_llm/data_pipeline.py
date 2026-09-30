@@ -48,7 +48,7 @@ class CausalLMBatch(TypedDict):
 class DataLoaderConfig:
     """Минимальные настройки batching и воспроизводимого shuffle."""
 
-    batch_size: int = 2
+    batch_size: int = 4
     num_workers: int = 0
     random_seed: int = 42
     pin_memory: bool = False
@@ -222,7 +222,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument("--split", choices=SPLIT_NAMES, default="train")
     parser.add_argument("--splits-dir", type=Path, default=Path("data/processed/splits"))
     parser.add_argument("--tokenizer-file", type=Path, default=DEFAULT_TOKENIZER_PATH)
-    parser.add_argument("--batch-size", type=int, default=2)
+    parser.add_argument("--batch-size", type=int, default=4)
     parser.add_argument("--num-workers", type=int, default=0)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--max-samples", type=int, default=8)
