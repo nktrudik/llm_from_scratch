@@ -11,8 +11,15 @@ from mini_llm.data.config import MAX_BATCH_SIZE
 from mini_llm.data.preprocessing import PreprocessingConfig
 from mini_llm.data.scraping import ScraperConfig
 from mini_llm.inference import GenerationConfig
+from mini_llm.inference.config import (
+    DEFAULT_CUSTOM_CHECKPOINT_PATH,
+    DEFAULT_PRETRAINED_CHECKPOINT_PATH,
+    DEFAULT_PRETRAINED_CONFIG_PATH,
+    PretrainedGenerationMode,
+)
 from mini_llm.modeling.config import DEFAULT_MAX_SEQUENCE_LENGTH
 from mini_llm.pretrained import PretrainedConfig
+from mini_llm.pretrained.workspace import load_active_model
 from mini_llm.tokenization.config import DEFAULT_TOKENIZER_PATH
 from mini_llm.training import TrainingConfig
 
@@ -175,9 +182,10 @@ class GenerationRequest(BaseModel):
 
     prompt: str = Field(min_length=1)
     model_backend: Literal["custom", "pretrained"] = "custom"
-    checkpoint_file: Path = Field(default_factory=lambda: Path("checkpoints/training/best.pt"))
+    checkpoint_file: Path | None = Field(default_factory=lambda: DEFAULT_CUSTOM_CHECKPOINT_PATH)
     tokenizer_file: Path | None = Field(default_factory=lambda: DEFAULT_TOKENIZER_PATH)
     pretrained_config_file: Path | None = None
+    pretrained_mode: PretrainedGenerationMode | None = None
     device: str = "cuda"
     max_new_tokens: int = Field(default=256, ge=0)
     temperature: float = Field(default=0.3, gt=0)
@@ -187,10 +195,17 @@ class GenerationRequest(BaseModel):
         json_schema_extra={
             "examples": [
                 {
+                    "model_backend": "custom",
+                    "prompt": "Привет! Как у тебя дела?",
+                    "checkpoint_file": str(DEFAULT_CUSTOM_CHECKPOINT_PATH),
+                    "tokenizer_file": str(DEFAULT_TOKENIZER_PATH),
+                },
+                {
                     "model_backend": "pretrained",
                     "prompt": "Привет! Как у тебя дела?",
-                    "checkpoint_file": "checkpoints/qwen2.5-0.5b-qlora/best.pt",
-                    "pretrained_config_file": ("configs/pretrained/qwen2.5-0.5b-qlora.json"),
+                    "pretrained_mode": "after_sft",
+                    "checkpoint_file": str(DEFAULT_PRETRAINED_CHECKPOINT_PATH),
+                    "pretrained_config_file": str(DEFAULT_PRETRAINED_CONFIG_PATH),
                     "device": "cuda",
                     "max_new_tokens": 256,
                     "temperature": 0.3,
@@ -202,18 +217,59 @@ class GenerationRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_backend_files(self) -> Self:
-        """Проверить только обязательные для выбранного backend файлы."""
+        """Подставить defaults выбранного backend и проверить обязательные файлы."""
 
+        if self.model_backend == "pretrained":
+            # Явно переданные пути сохраняются; defaults выбирает API, а не UI.
+            explicit_checkpoint = "checkpoint_file" in self.model_fields_set
+            if self.pretrained_mode is None:
+                self.pretrained_mode = (
+                    "after_sft"
+                    if explicit_checkpoint and self.checkpoint_file is not None
+                    else "before_sft"
+                )
+            registration = (
+                load_active_model()
+                if not explicit_checkpoint or "pretrained_config_file" not in self.model_fields_set
+                else None
+            )
+            if not explicit_checkpoint:
+                self.checkpoint_file = (
+                    (
+                        registration.best_checkpoint
+                        if registration
+                        else DEFAULT_PRETRAINED_CHECKPOINT_PATH
+                    )
+                    if self.pretrained_mode == "after_sft"
+                    else None
+                )
+            if "pretrained_config_file" not in self.model_fields_set:
+                self.pretrained_config_file = (
+                    registration.config_file if registration else DEFAULT_PRETRAINED_CONFIG_PATH
+                )
+            if "tokenizer_file" not in self.model_fields_set:
+                self.tokenizer_file = None
         if self.model_backend == "custom" and self.tokenizer_file is None:
             raise ValueError("Для custom backend нужен tokenizer_file")
         if self.model_backend == "pretrained" and self.pretrained_config_file is None:
             raise ValueError("Для pretrained backend нужен pretrained_config_file")
+        if self.model_backend == "custom" and self.checkpoint_file is None:
+            raise ValueError("Для custom backend нужен checkpoint_file")
+        if self.model_backend == "custom" and self.pretrained_mode is not None:
+            raise ValueError("pretrained_mode допустим только для pretrained backend")
+        if self.model_backend == "pretrained":
+            if self.pretrained_mode == "after_sft" and self.checkpoint_file is None:
+                raise ValueError("Для режима after_sft нужен checkpoint_file")
+            if self.pretrained_mode == "before_sft" and self.checkpoint_file is not None:
+                raise ValueError("Режим before_sft не использует checkpoint_file")
         return self
 
     def to_config(self) -> GenerationConfig:
         """Преобразовать параметры запроса во внутреннюю конфигурацию генерации."""
 
         values = self.model_dump(exclude={"prompt"})
+        if values["pretrained_mode"] is None:
+            values.pop("pretrained_mode")
         return GenerationConfig(**values)
 
 
@@ -222,3 +278,12 @@ class GenerationResponse(BaseModel):
 
     text: str
     token_ids: list[int]
+
+
+class GenerationOptionsResponse(BaseModel):
+    """Доступные pretrained-режимы; проверка не загружает модель или checkpoint."""
+
+    model_id: str
+    before_sft_available: bool
+    after_sft_available: bool
+    reason: str | None

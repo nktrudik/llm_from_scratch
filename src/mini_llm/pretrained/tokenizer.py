@@ -35,6 +35,10 @@ class HuggingFaceTokenizerProtocol(Protocol):
 
     def save_pretrained(self, save_directory: str) -> object: ...
 
+    def apply_chat_template(
+        self, conversation: list[dict[str, str]], *, tokenize: bool, add_generation_prompt: bool
+    ) -> object: ...
+
 
 class HuggingFaceDialogueTokenizer:
     """Форматировать dialogue samples tokenizer-ом pretrained-модели."""
@@ -100,14 +104,64 @@ class HuggingFaceDialogueTokenizer:
         return self._eos_id()
 
     def encode_prompt(self, prompt: str) -> list[int]:
-        """Собрать простой single-turn prompt в проектном role-формате."""
+        """Использовать родной chat template, а при его отсутствии — legacy role-формат."""
 
+        if self.has_chat_template:
+            return self._chat_ids([{"role": "user", "content": prompt}], generation_prompt=True)
         return [
             self._bos_id(),
             *self._role_ids(USER_TOKEN),
             *self.encode(prompt),
             *self._role_ids(ASSISTANT_TOKEN),
         ]
+
+    @property
+    def has_chat_template(self) -> bool:
+        """Не назначать модели произвольные role tokens вместо её instruct-формата."""
+
+        template = getattr(self.backend, "chat_template", None)
+        return isinstance(template, (str, dict)) and bool(template)
+
+    def _chat_ids(self, messages: list[dict[str, str]], *, generation_prompt: bool) -> list[int]:
+        result = self.backend.apply_chat_template(
+            messages, tokenize=True, add_generation_prompt=generation_prompt
+        )
+        if not isinstance(result, list) or not all(
+            isinstance(token, int) and not isinstance(token, bool) for token in result
+        ):
+            raise RuntimeError("Chat template tokenizer-а не вернул список token IDs")
+        return cast(list[int], result)
+
+    def _encode_chat_window(self, sample: DialogueSample, max_length: int) -> EncodedDialogue:
+        messages = [
+            {"role": "user" if role == USER_TOKEN else "assistant", "content": text}
+            for role, text in zip(
+                context_role_tokens(len(sample.context)), sample.context, strict=True
+            )
+        ]
+        # Некоторые templates требуют, чтобы разговор начинался с user.
+        if messages[0]["role"] == "assistant":
+            messages.insert(0, {"role": "user", "content": ""})
+        while True:
+            selected = messages or [{"role": "user", "content": ""}]
+            prompt_ids = self._chat_ids(selected, generation_prompt=True)
+            full_ids = self._chat_ids(
+                [*selected, {"role": "assistant", "content": sample.response}],
+                generation_prompt=False,
+            )
+            if full_ids[: len(prompt_ids)] != prompt_ids:
+                raise RuntimeError(
+                    "Chat template не позволяет надёжно отделить assistant response от context"
+                )
+            if len(full_ids) <= max_length:
+                return EncodedDialogue(full_ids, len(prompt_ids))
+            if not messages:
+                raise OversizedResponseError(
+                    response_tokens=len(full_ids) - len(prompt_ids), max_length=max_length
+                )
+            messages.pop(0)
+            if messages and messages[0]["role"] == "assistant":
+                messages.pop(0)
 
     def encode_training_window(
         self,
@@ -117,6 +171,8 @@ class HuggingFaceDialogueTokenizer:
     ) -> EncodedDialogue:
         """Сохранить response и заполнить окно последними context messages."""
 
+        if self.has_chat_template:
+            return self._encode_chat_window(sample, max_length)
         context_segments = [
             [*self._role_ids(role), *self.encode(text)]
             for role, text in zip(

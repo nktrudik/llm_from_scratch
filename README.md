@@ -4,11 +4,10 @@
 pipeline подготовки текстовых диалогов из тредов 2ch. Репозиторий содержит сборщик JSON API,
 preprocessing графа ответов, разбиение датасета по тредам, обучение собственного byte-level BPE
 tokenizer, расчёт token statistics, универсальное обучение custom и pretrained causal LM,
-LoRA/QLoRA и локальный FastAPI для ручного запуска этапов.
+LoRA/QLoRA, локальный FastAPI для ручного запуска этапов и минимальный чат на Streamlit.
 
-В проекте пока нет distributed training, scheduler, production model evaluation и пользовательского
-веб-интерфейса. Код обучения и HTTP-генерации реализован, но сама модель в репозитории не обучена и
-не умеет осмысленно отвечать без подходящего checkpoint.
+В проекте пока нет distributed training, scheduler и production model evaluation.
+Код обучения и HTTP-генерации реализован; качество ответов зависит от используемого checkpoint.
 
 ## Установка и VS Code
 
@@ -80,7 +79,7 @@ src/mini_llm/
 ├── __init__.py              # обязательный маркер Python-пакета
 ├── api/                     # HTTP routes, Pydantic-схемы, сервисы и jobs
 ├── modeling/                # общий model interface и собственный Transformer
-├── pretrained/              # Hugging Face, cache, full/LoRA/QLoRA и генерация
+├── pretrained/              # setup/download, registry, Hugging Face, full/LoRA/QLoRA
 ├── tokenization/            # BPE tokenizer и его конфигурация
 ├── data/
 │   ├── config.py            # общие ограничения Dataset/DataLoader
@@ -93,11 +92,15 @@ src/mini_llm/
 │   └── scraping/            # JSON API 2ch, parsing и storage
 ├── training/                # универсальный trainer, monitoring, checkpoints и overfit
 ├── inference/               # config, схемы и генерация по checkpoint
-└── ui/                      # зарезервировано под будущий UI, пока пусто
+└── ui/                      # Streamlit-экран, HTTP-клиент и настройки подключения
 
 data/raw/2ch/<board>/         # неизменяемые raw JSON тредов
 data/processed/               # dialogue dataset, split и отчёты
 artifacts/tokenizer/          # обученный tokenizer JSON
+artifacts/pretrained/         # регистрации скачанных моделей и active.json
+configs/pretrained/           # конфиги по model ID и режиму адаптации
+checkpoints/pretrained/       # отдельные SFT checkpoints каждой модели/режима
+.cache/huggingface/           # Hub snapshots, tokenizer и исходные веса
 tests/                        # быстрые unit tests
 ```
 
@@ -122,6 +125,77 @@ Invoke-RestMethod -Method Get -Uri "http://127.0.0.1:8000/v1/jobs/JOB_ID"
 
 Это локальный учебный диспетчер, а не production-очередь: его jobs хранятся в RAM и теряются при
 перезапуске API. Checkpoints и результаты pipeline сохраняются на диск обычными модулями проекта.
+
+## Минимальный чат (Streamlit)
+
+Один экран: выбор `Custom` (`custom`) или `Qwen` (`pretrained`),
+поле сообщения и ответ. Сохраняется только отображение текущей пары: следующий запрос заменяет
+предыдущую пару. Истории, памяти диалога и списка чатов нет. Только для Qwen есть выбор:
+«До SFT — исходная модель» или «После SFT — best checkpoint».
+Второй вариант отсутствует, пока у активной модели нет непустого `best.pt`; наличие periodic
+checkpoint или `last.pt` его не включает. После обучения обновите страницу.
+UI проверяет доступность через `GET /v1/generate/options`, не читает файлы модели самостоятельно.
+До выполнения setup ввод для Qwen заблокирован, но Custom остаётся доступен.
+
+`Qwen` — название выбора pretrained backend в интерфейсе; фактический Hugging Face model ID
+показывается под ним и определяется последней успешной командой setup, а не жёстко задан в UI.
+
+Установить UI и зависимости обоих backend (обучение и загрузка весов не запускаются):
+
+```powershell
+uv sync --extra dev --extra pretrained --extra ui
+```
+
+Если нужен только custom backend, можно не указывать `--extra pretrained`. Без `uv`:
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -e ".[dev,pretrained,ui]"
+```
+
+В первом терминале запустить API из корня проекта:
+
+```powershell
+.\.venv\Scripts\uvicorn.exe mini_llm.main:app --host 127.0.0.1 --port 8000
+```
+
+Во втором терминале из того же каталога запустить интерфейс:
+
+```powershell
+.\.venv\Scripts\python.exe -m streamlit run src/mini_llm/ui/app.py --server.address 127.0.0.1 --server.port 8501 --browser.gatherUsageStats false
+```
+
+Открыть `http://127.0.0.1:8501`. Streamlit работает на CPU, GPU ему не нужен. Генерацию выполняет
+API на CUDA по существующим defaults. Для Custom нужны checkpoint и BPE tokenizer;
+для Qwen сначала выполните setup из раздела pretrained ниже. До SFT checkpoint не требуется.
+
+UI отправляет в `POST /v1/generate` только `prompt`, `model_backend` и, для Qwen, `pretrained_mode`.
+Сервер подставляет пути:
+
+| Backend | Checkpoint | Tokenizer / конфиг |
+|---|---|---|
+| `custom` | `checkpoints/training/best.pt` | `artifacts/tokenizer/2ch_bpe.json` |
+| `pretrained`, до SFT | не используется | конфиг из `artifacts/pretrained/active.json` |
+| `pretrained`, после SFT | `best.pt` из каталога активной модели | тот же конфиг |
+
+Pretrained tokenizer выбирается из `model_id/revision/cache_dir` в конфиге, а не из BPE-файла.
+Загрузка до SFT не создаёт случайный LoRA-адаптер: используются исходные instruct-веса в
+заданной dtype. После SFT применяется сохранённый full/LoRA/QLoRA checkpoint с проверкой metadata.
+Defaults HTTP-генерации находятся в
+`GenerationRequest`: `device="cuda"`, `max_new_tokens=256`, `temperature=0.3`, `top_k=20`.
+Для прямых API-запросов по-прежнему можно явно передавать другие пути и параметры.
+
+Во время ожидания UI показывает индикатор; ошибки соединения, занятого API или загрузки
+checkpoint выводятся на экране. Запросы автоматически не повторяются. Первая загрузка Qwen
+может занять несколько минут; UI ожидает до 10 минут. Затем API держит подготовленную pretrained
+модель и tokenizer в памяти и повторно использует их без чтения checkpoint и подготовки адаптера.
+Это кэш ресурсов, а не память диалога: каждый prompt независим. В памяти хранится одна модель;
+переключение до/после SFT, изменение config/checkpoint либо device вызывает перезагрузку.
+После перезапуска API модель загружается заново; Hugging Face cache на диске при этом сохраняется.
+Перед запуском обучения/подготовки pretrained через API и при выборе custom кэш очищается,
+чтобы освободить RAM/VRAM. В терминале API видны загрузка модели и попадание в кэш.
+Перед обучением через CLI остановите API: это другой процесс, его кэш занимает VRAM независимо
+от процесса trainer. API и UI можно снова запустить после обучения.
+Для другого адреса API задайте `$env:MINI_LLM_API_URL = "http://127.0.0.1:8000"` до запуска UI.
 
 ## Сбор тредов 2ch
 
@@ -337,42 +411,98 @@ loss. Она использует CPU/RAM для Dataset и GPU/VRAM для мо
 поддерживает закреплённую branch/tag/commit revision, отдельный cache и сохраняемую JSON-
 конфигурацию. Логика Transformers/PEFT не смешана с собственной реализацией Transformer.
 
-Пример для RTX 3050 4 GB использует базовую multilingual-модель `Qwen/Qwen2.5-0.5B` и закрепляет
-её commit. Подготовка QLoRA скачивает веса в `.cache/huggingface`, подключает 4-bit NF4 и LoRA,
-а параметры сохраняет в `configs/pretrained/qwen2.5-0.5b-qlora.json`:
+### Автоматическая загрузка по model ID
+
+Текущая instruct-модель — [Qwen2.5-0.5B-Instruct](https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct).
+Для неё и других совместимых decoder-only моделей достаточно одной команды:
 
 ```powershell
-.\.venv\Scripts\python.exe -m mini_llm.pretrained prepare --model-id Qwen/Qwen2.5-0.5B --revision 060db6499f32faf8b98477b0a26969ef7d8b9987 --mode qlora --dtype float16 --max-sequence-length 1024 --output-config configs/pretrained/qwen2.5-0.5b-qlora.json
+.\.venv\Scripts\python.exe -m mini_llm.pretrained setup "Qwen/Qwen2.5-0.5B-Instruct"
 ```
 
-QLoRA fine-tuning на существующих split-файлах:
+Команда использует [Hub snapshot download](https://huggingface.co/docs/huggingface_hub/guides/download):
+разрешает `main` в конкретный commit, скачивает модель/tokenizer, предпочитает safetensors и не
+скачивает дубли весов для ONNX, GGUF, TensorFlow или Flax. Проверяет конфиг и tokenizer без создания
+модели в GPU, создаёт регистрацию и делает её активной для UI. Требуются сеть, место на диске,
+CPU/RAM; GPU не нужен. Повторная загрузка использует дисковый cache.
+
+Старые артефакты базовой модели удалены. Их checkpoints нельзя переносить на Instruct.
+Название «До SFT» означает до **нашего** дообучения: исходная Instruct-модель уже обучена авторами.
+
+Для указанного ID создаются:
+
+```text
+.cache/huggingface/models--Qwen--Qwen2.5-0.5B-Instruct/snapshots/<commit>/
+configs/pretrained/model--qwen--qwen2.5-0.5b-instruct-qlora.json
+artifacts/pretrained/model--qwen--qwen2.5-0.5b-instruct/qlora.json
+artifacts/pretrained/active.json
+checkpoints/pretrained/model--qwen--qwen2.5-0.5b-instruct/qlora/
+```
+
+Конфиг сохраняется с закреплённым commit и `local_files_only=true`: training/inference используют
+уже скачанные файлы. Конфиги/checkpoints разных model ID и adaptation mode изолированы.
+Setup не перезаписывает конфиг, несовместимый с существующими checkpoints. Последняя успешная
+регистрация определяет активную pretrained-модель; другие модели не удаляются.
+
+Для другой модели замените аргумент на её `owner/model`. Можно указать `--revision <commit-or-tag>`,
+`--mode full|lora|qlora`, `--dtype` и `--cache-dir`. По умолчанию: QLoRA, float16, окно 1024;
+для full без явной dtype выбирается float32. Доступны causal LM, поддерживаемые установленным
+`AutoModelForCausalLM`, и соответствующие tokenizer. GGUF, encoder-decoder и произвольные
+multimodal-модели не поддерживаются. Для gated/private репозитория нужны права и `HF_TOKEN`;
+удалённый Python-код автоматически не запускается (`trust_remote_code=false`).
+
+Для instruct-моделей training и inference используют
+[родной chat template](https://huggingface.co/docs/transformers/chat_templating).
+Loss по-прежнему маскирует user/context и учитывает только assistant response и завершающие
+маркеры. Старый context убирается первым; response не обрезается. Без chat template сохраняется
+legacy role-формат. Если template не позволяет надёжно определить границу response, код выдаёт
+понятную ошибку, а не обучается с неверной маской.
+
+### Загрузка и SFT одной командой
+
+Датасет уже подготовлен: нужны `data/processed/splits/train.jsonl` и `validation.jsonl`.
+Pretrained использует свой tokenizer: обучать BPE и повторно выполнять preprocessing не нужно.
+Перед CLI-обучением остановите API, чтобы освободить GPU от inference-кэша.
+
+Стартовые параметры для RTX 3050 4 GB — QLoRA и batch size 1:
 
 ```powershell
-.\.venv\Scripts\python.exe -m mini_llm.training --backend pretrained --pretrained-config configs/pretrained/qwen2.5-0.5b-qlora.json --splits-dir data/processed/splits --checkpoint-dir checkpoints/qwen2.5-0.5b-qlora --batch-size 1 --epochs 3 --learning-rate 0.0002 --validation-interval 1000 --checkpoint-interval 1000
+.\.venv\Scripts\python.exe -m mini_llm.pretrained setup "Qwen/Qwen2.5-0.5B-Instruct" --train --batch-size 1 --epochs 3 --learning-rate 0.0002
 ```
 
-Для обычного LoRA сначала создайте отдельную конфигурацию, заменив `--mode qlora` на
-`--mode lora`, а затем передайте новый JSON в ту же training-команду. LoRA хранит базовые веса в
-выбранной dtype, поэтому требует больше VRAM, чем QLoRA.
+Только флаг `--train` запускает существующий trainer после setup. Training читает split JSONL,
+использует CPU/RAM для Dataset и CUDA/VRAM для обучения; создаёт periodic `step_XXXXXXXX.pt`,
+`best.pt` и `last.pt` в каталоге модели. AMP, AdamW, response-only loss, validation и resume
+остаются в общем training pipeline. При отсутствии split команда завершается **до** скачивания.
+VRAM зависит от модели и длины samples: QLoRA не гарантирует, что произвольная модель войдёт в 4 GB.
 
-Full fine-tuning также является отдельной конфигурацией:
+Если модель уже скачана, можно отдельно запустить trainer с дополнительными настройками:
 
 ```powershell
-.\.venv\Scripts\python.exe -m mini_llm.pretrained prepare --model-id Qwen/Qwen2.5-0.5B --revision 060db6499f32faf8b98477b0a26969ef7d8b9987 --mode full --dtype float16 --max-sequence-length 1024 --output-config configs/pretrained/qwen2.5-0.5b-full.json
-.\.venv\Scripts\python.exe -m mini_llm.training --backend pretrained --pretrained-config configs/pretrained/qwen2.5-0.5b-full.json --splits-dir data/processed/splits --checkpoint-dir checkpoints/qwen2.5-0.5b-full --batch-size 1 --epochs 3 --learning-rate 0.00001 --validation-interval 1000 --checkpoint-interval 1000
+.\.venv\Scripts\python.exe -m mini_llm.training --backend pretrained --pretrained-config configs/pretrained/model--qwen--qwen2.5-0.5b-instruct-qlora.json --checkpoint-dir checkpoints/pretrained/model--qwen--qwen2.5-0.5b-instruct/qlora --batch-size 1 --epochs 3 --learning-rate 0.0002 --validation-interval 1000 --validation-batches 200 --checkpoint-interval 1000
 ```
 
-Full fine-tuning 0.5B-модели с AdamW обычно не помещается в 4 GB VRAM. Команда реализована, но
-для неё потребуется GPU с большим объёмом памяти либо меньшая модель. QLoRA — практичный стартовый
-режим для RTX 3050.
-
-Продолжение QLoRA после остановки, до общего целевого числа четырёх эпох:
+Для обычного LoRA и full fine-tuning:
 
 ```powershell
-.\.venv\Scripts\python.exe -m mini_llm.training --backend pretrained --pretrained-config configs/pretrained/qwen2.5-0.5b-qlora.json --splits-dir data/processed/splits --checkpoint-dir checkpoints/qwen2.5-0.5b-qlora --resume-from checkpoints/qwen2.5-0.5b-qlora/last.pt --batch-size 1 --epochs 4 --learning-rate 0.0002 --validation-interval 1000 --checkpoint-interval 1000
+.\.venv\Scripts\python.exe -m mini_llm.pretrained setup "Qwen/Qwen2.5-0.5B-Instruct" --mode lora --train --batch-size 1 --epochs 3 --learning-rate 0.0002
+.\.venv\Scripts\python.exe -m mini_llm.pretrained setup "Qwen/Qwen2.5-0.5B-Instruct" --mode full --train --batch-size 1 --epochs 3 --learning-rate 0.00001
 ```
 
-Revision, adaptation mode, tokenizer additions и PEFT-параметры входят в checkpoint metadata.
+LoRA требует больше VRAM, чем QLoRA. Full fine-tuning 0.5B-модели с AdamW не рассчитан на 4 GB:
+нужен GPU с большей памятью или меньшая модель. Checkpoints каждого режима сохраняются отдельно.
+
+Продолжение QLoRA из `last.pt` до общего целевого числа шести эпох, без обращения к Hub:
+
+```powershell
+.\.venv\Scripts\python.exe -m mini_llm.training --backend pretrained --pretrained-config configs/pretrained/model--qwen--qwen2.5-0.5b-instruct-qlora.json --checkpoint-dir checkpoints/pretrained/model--qwen--qwen2.5-0.5b-instruct/qlora --resume-from checkpoints/pretrained/model--qwen--qwen2.5-0.5b-instruct/qlora/last.pt --batch-size 1 --epochs 6 --learning-rate 0.0002
+```
+
+Для resume из лучшего checkpoint замените `last.pt` на `best.pt`. Исходная команда `pretrained
+prepare --model-id ... --output-config ...` тоже сохранена для ручного управления, но для
+автоматической регистрации модели в UI используйте setup.
+
+Revision, adaptation mode и PEFT-параметры входят в checkpoint metadata.
 Resume отклоняется, если конфигурация модели отличается. Программный API предоставляет
 `prepare_pretrained_model()` для training и `generate_pretrained()` для inference.
 
@@ -484,18 +614,24 @@ $body = @{
 Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:8000/v1/generate" -ContentType "application/json" -Body $body
 ```
 
-Для full/LoRA/QLoRA pretrained checkpoint:
+Для активной pretrained-модели до нашего SFT:
 
 ```powershell
 $body = @{
     model_backend = "pretrained"
+    pretrained_mode = "before_sft"
     prompt = "Привет! Объясни простыми словами, что такое Transformer."
-    checkpoint_file = "checkpoints/qwen2.5-0.5b-qlora/best.pt"
-    pretrained_config_file = "configs/pretrained/qwen2.5-0.5b-qlora.json"
-    device = "cuda"
-    max_new_tokens = 128
-    temperature = 0.8
-    top_k = 50
+} | ConvertTo-Json
+Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:8000/v1/generate" -ContentType "application/json" -Body $body
+```
+
+Для лучшего full/LoRA/QLoRA checkpoint активной модели:
+
+```powershell
+$body = @{
+    model_backend = "pretrained"
+    pretrained_mode = "after_sft"
+    prompt = "Привет! Объясни простыми словами, что такое Transformer."
 } | ConvertTo-Json
 Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:8000/v1/generate" -ContentType "application/json" -Body $body
 ```
@@ -503,8 +639,11 @@ Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:8000/v1/generate" -Content
 Для `custom` ручка использует `BPETokenizer` из `tokenizer_file`. Для `pretrained` передавать
 `tokenizer_file` не требуется: Hugging Face tokenizer всегда определяется полями
 `model_id/revision/cache_dir` из `pretrained_config_file`. Ручка восстанавливает model state из
-training checkpoint и возвращает текст вместе с новыми token IDs. Качество зависит от checkpoint;
-сам вызов inference модель не обучает.
+training checkpoint только после SFT и возвращает текст вместе с новыми token IDs.
+Для совместимости прямой API-запрос с явно переданным `checkpoint_file` и без `pretrained_mode`
+по-прежнему выбирает after-SFT загрузку; пути можно переопределить. До SFT checkpoint не читается.
+Отсутствующий checkpoint после SFT — ошибка, без молчаливого переключения на исходные веса.
+Сам вызов inference модель не обучает.
 
 ## Параметры API и вспомогательные CLI
 
@@ -518,6 +657,7 @@ training checkpoint и возвращает текст вместе с новы�
 - `POST /v1/statistics/tokens` — token statistics;
 - `POST /v1/scraper` — последовательный сбор тредов;
 - `POST /v1/generate` — один ответ модели;
+- `GET /v1/generate/options` — доступность режимов активной pretrained-модели без загрузки весов;
 - `GET /v1/jobs/{job_id}` — состояние фоновой операции.
 
 Для быстрых диагностических утилит сохранены прямые CLI:
@@ -546,20 +686,26 @@ training checkpoint и возвращает текст вместе с новы�
 - отдельный ручной overfit sanity-check;
 - CUDA/AMP training, AdamW, gradient clipping и validation loss;
 - periodic/best/last checkpoints и продолжение обучения;
+- автоматический setup по Hugging Face model ID, закрепление commit и локальная регистрация;
 - Hugging Face model ID/revision/cache, full fine-tuning, LoRA и QLoRA;
-- локальный FastAPI с последовательными background jobs и генерацией по checkpoint.
+- родной instruct chat template в training/inference и режимы до/после нашего SFT;
+- локальный FastAPI с последовательными background jobs и генерацией по checkpoint;
+- минимальный Streamlit-чат с выбором custom/pretrained, без истории и памяти.
 
 ## Что ещё не реализовано
 
 - scheduler и gradient accumulation;
 - расширенные validation metrics и model evaluation;
 - distributed/multi-GPU training;
-- production job queue, аутентификация и постоянное хранение статусов API;
-- пользовательский веб-интерфейс поверх HTTP API.
+- production job queue, аутентификация и постоянное хранение статусов API.
 
 ## Проверки качества
 
 Быстрые unit tests используют только временные маленькие fixtures и не запускают полный pipeline:
+
+Для проверок Streamlit-экрана установите optional-группу `ui` вместе с `dev`; без неё эти тесты
+пропускаются. UI-тесты используют официальный `AppTest`, не запускают браузер, реальные
+HTTP-запросы или загрузку моделей.
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest

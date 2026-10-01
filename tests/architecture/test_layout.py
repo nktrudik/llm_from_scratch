@@ -10,8 +10,8 @@ def test_package_root_contains_only_entrypoint_and_package_marker() -> None:
     assert root_python_files == {"__init__.py", "main.py"}
 
 
-def test_ui_placeholder_contains_no_implementation() -> None:
+def test_ui_has_an_isolated_streamlit_entrypoint() -> None:
     package_root = Path(__file__).parents[2] / "src" / "mini_llm"
-    ui_files = {path.name for path in (package_root / "ui").iterdir()}
+    ui_files = {path.name for path in (package_root / "ui").glob("*.py")}
 
-    assert ui_files <= {".gitkeep"}
+    assert ui_files == {"__init__.py", "app.py", "client.py", "config.py"}

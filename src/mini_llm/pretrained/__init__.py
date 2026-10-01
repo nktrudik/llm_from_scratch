@@ -9,6 +9,7 @@ from mini_llm.pretrained.model import (
     prepare_pretrained_model,
     save_pretrained_parameters,
 )
+from mini_llm.pretrained.setup import setup_pretrained_model
 from mini_llm.pretrained.tokenizer import HuggingFaceDialogueTokenizer
 
 __all__ = [
@@ -22,4 +23,5 @@ __all__ = [
     "generate_pretrained",
     "prepare_pretrained_model",
     "save_pretrained_parameters",
+    "setup_pretrained_model",
 ]

@@ -9,6 +9,7 @@ from fastapi import BackgroundTasks, FastAPI, HTTPException, status
 from mini_llm.api.jobs import JobAlreadyRunningError, JobManager
 from mini_llm.api.schemas import (
     DatasetSplitRequest,
+    GenerationOptionsResponse,
     GenerationRequest,
     GenerationResponse,
     HealthResponse,
@@ -29,7 +30,8 @@ from mini_llm.api.services import (
     run_tokenizer_training,
     run_training,
 )
-from mini_llm.inference import generate_response
+from mini_llm.inference import clear_pretrained_cache, generate_response
+from mini_llm.inference.options import pretrained_generation_options
 
 app = FastAPI(
     title="mini_llm local control API",
@@ -48,6 +50,8 @@ def _submit_job(
         record = job_manager.create(kind)
     except JobAlreadyRunningError as error:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
+    if kind in {"training", "pretrained_prepare"}:
+        clear_pretrained_cache()
     background_tasks.add_task(job_manager.run, record.job_id, operation)
     return JobResponse.model_validate(record.to_dict())
 
@@ -157,9 +161,22 @@ def start_scraper(request: ScrapeRequest, background_tasks: BackgroundTasks) -> 
     return _submit_job("scraper", background_tasks, lambda: run_scraper(request))
 
 
+@app.get("/v1/generate/options", response_model=GenerationOptionsResponse)
+def generation_options() -> GenerationOptionsResponse:
+    """Проверить доступность до/после SFT, не загружая веса в CPU или GPU."""
+
+    availability = pretrained_generation_options()
+    return GenerationOptionsResponse(
+        model_id=availability.model_id,
+        before_sft_available=availability.before_sft_available,
+        after_sft_available=availability.after_sft_available,
+        reason=availability.reason,
+    )
+
+
 @app.post("/v1/generate", response_model=GenerationResponse)
 def generate(request: GenerationRequest) -> GenerationResponse:
-    """Загрузить checkpoint и синхронно сгенерировать один ответ."""
+    """Сгенерировать один ответ, повторно используя pretrained-модель в памяти."""
 
     active_job_id = job_manager.active_job_id()
     if active_job_id is not None:

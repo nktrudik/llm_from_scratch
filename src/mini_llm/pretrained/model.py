@@ -156,7 +156,9 @@ def _torch_dtype(name: str) -> torch.dtype | str:
     return mapping[name]
 
 
-def prepare_pretrained_model(config: PretrainedConfig) -> PreparedPretrained:
+def prepare_pretrained_model(
+    config: PretrainedConfig, *, for_inference: bool = False
+) -> PreparedPretrained:
     """Загрузить модель/tokenizer и применить выбранный режим fine-tuning."""
 
     total_started_at = time.perf_counter()
@@ -224,9 +226,9 @@ def prepare_pretrained_model(config: PretrainedConfig) -> PreparedPretrained:
 
     model_config = cast(_ModelConfig | None, getattr(model, "config", None))
     if model_config is not None:
-        model_config.use_cache = False
+        model_config.use_cache = for_inference
         model_config.pad_token_id = tokenizer.pad_token_id
-    if config.gradient_checkpointing:
+    if config.gradient_checkpointing and not for_inference:
         resizable_model.gradient_checkpointing_enable()
 
     if config.adaptation_mode in {"lora", "qlora"}:
@@ -235,7 +237,7 @@ def prepare_pretrained_model(config: PretrainedConfig) -> PreparedPretrained:
             prepare_kbit = cast(Callable[..., nn.Module], peft.prepare_model_for_kbit_training)
             model = prepare_kbit(
                 model,
-                use_gradient_checkpointing=config.gradient_checkpointing,
+                use_gradient_checkpointing=config.gradient_checkpointing and not for_inference,
             )
         lora_factory = cast(Callable[..., object], peft.LoraConfig)
         lora_config = lora_factory(

@@ -11,15 +11,25 @@ import torch
 from torch import Tensor
 
 from mini_llm.data.dialogue import ASSISTANT_TOKEN, BOS_TOKEN, EOS_TOKEN, USER_TOKEN
+from mini_llm.inference.cache import PretrainedModelCache
 from mini_llm.inference.config import GenerationConfig
 from mini_llm.inference.schemas import GenerationResult
 from mini_llm.modeling import DecoderOnlyTransformer, ModelConfig
 from mini_llm.pretrained import (
+    PreparedPretrained,
     PretrainedConfig,
     generate_pretrained,
     prepare_pretrained_model,
 )
 from mini_llm.tokenization import BPETokenizer
+
+_pretrained_cache = PretrainedModelCache()
+
+
+def clear_pretrained_cache() -> None:
+    """Освободить inference-модель, чтобы она не занимала VRAM во время обучения."""
+
+    _pretrained_cache.clear()
 
 
 def _read_checkpoint(checkpoint_file: Path) -> dict[str, object]:
@@ -69,6 +79,8 @@ def _generate_custom(
     tokenizer_file = config.tokenizer_file
     if tokenizer_file is None:
         raise RuntimeError("Для custom backend не указан tokenizer_file")
+    if config.checkpoint_file is None:
+        raise RuntimeError("Для custom backend не указан checkpoint_file")
     tokenizer = BPETokenizer.load(tokenizer_file)
     model = _load_custom_model(config.checkpoint_file, device)
     prompt_ids = [
@@ -94,6 +106,29 @@ def _generate_custom(
     )
 
 
+def _load_pretrained_model(
+    config_file: Path,
+    checkpoint_file: Path | None,
+    device: torch.device,
+) -> PreparedPretrained:
+    pretrained_config = PretrainedConfig.load(config_file)
+    if checkpoint_file is None:
+        # До SFT используется исходная модель без случайно созданного LoRA-адаптера.
+        pretrained_config = pretrained_config.model_copy(update={"adaptation_mode": "full"})
+    elif not checkpoint_file.is_file():
+        raise RuntimeError("Режим после SFT недоступен: checkpoint ещё не создан")
+    prepared = prepare_pretrained_model(pretrained_config, for_inference=True)
+    if checkpoint_file is not None:
+        payload = _read_checkpoint(checkpoint_file)
+        saved_metadata = payload.get("model_metadata")
+        if saved_metadata != prepared.model.checkpoint_metadata:
+            raise RuntimeError("PretrainedConfig не совпадает с model metadata checkpoint")
+        prepared.model.load_checkpoint_state_dict(_checkpoint_model_state(payload))
+    prepared.model.to(device)
+    prepared.model.eval()
+    return prepared
+
+
 def _generate_with_pretrained(
     prompt: str,
     config: GenerationConfig,
@@ -102,22 +137,21 @@ def _generate_with_pretrained(
     config_file = config.pretrained_config_file
     if config_file is None:
         raise RuntimeError("Для pretrained backend не указан pretrained_config_file")
-    pretrained_config = PretrainedConfig.load(config_file)
-    prepared = prepare_pretrained_model(pretrained_config)
-    payload = _read_checkpoint(config.checkpoint_file)
-    saved_metadata = payload.get("model_metadata")
-    if saved_metadata != prepared.model.checkpoint_metadata:
-        raise RuntimeError("PretrainedConfig не совпадает с model metadata checkpoint")
-    prepared.model.load_checkpoint_state_dict(_checkpoint_model_state(payload))
-    prepared.model.to(device)
-    prepared.model.eval()
-    result = generate_pretrained(
-        prepared,
-        prompt,
-        max_new_tokens=config.max_new_tokens,
-        temperature=config.temperature,
-        top_k=config.top_k,
-    )
+    if config.checkpoint_file is not None and not config.checkpoint_file.is_file():
+        raise RuntimeError("Режим после SFT недоступен: checkpoint ещё не создан")
+    with _pretrained_cache.use(
+        config_file,
+        config.checkpoint_file,
+        device,
+        lambda: _load_pretrained_model(config_file, config.checkpoint_file, device),
+    ) as prepared:
+        result = generate_pretrained(
+            prepared,
+            prompt,
+            max_new_tokens=config.max_new_tokens,
+            temperature=config.temperature,
+            top_k=config.top_k,
+        )
     return GenerationResult(result.text, result.token_ids)
 
 
@@ -134,4 +168,5 @@ def generate_response(prompt: str, config: GenerationConfig | None = None) -> Ge
         raise ValueError("Поддерживаются только устройства cpu и cuda")
     if active_config.model_backend == "pretrained":
         return _generate_with_pretrained(prompt, active_config, device)
+    clear_pretrained_cache()
     return _generate_custom(prompt, active_config, device)
