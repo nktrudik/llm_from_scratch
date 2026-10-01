@@ -9,6 +9,7 @@ from typing import Protocol, cast
 
 import torch
 from torch import Tensor, nn
+from torch.nn import functional as F
 
 from mini_llm.modeling import CausalLMBackend, CausalLMOutput
 from mini_llm.pretrained.config import PretrainedConfig
@@ -72,16 +73,24 @@ class HuggingFaceCausalLMBackend(CausalLMBackend):
         labels: Tensor,
     ) -> CausalLMOutput:
         call_model = cast(Callable[..., object], self._model)
+
         output = call_model(
             input_ids=input_ids,
             attention_mask=attention_mask,
-            labels=labels,
             use_cache=False,
         )
+
         logits = getattr(output, "logits", None)
-        loss = getattr(output, "loss", None)
-        if not isinstance(logits, Tensor) or not isinstance(loss, Tensor):
-            raise RuntimeError("Hugging Face causal LM не вернула logits и loss")
+
+        if not isinstance(logits, Tensor):
+            raise RuntimeError("Hugging Face causal LM не вернула logits")
+
+        loss = F.cross_entropy(
+            logits.reshape(-1, logits.size(-1)),
+            labels.reshape(-1),
+            ignore_index=-100,
+        )
+
         return CausalLMOutput(logits, loss)
 
     def checkpoint_state_dict(self) -> Mapping[str, Tensor]:

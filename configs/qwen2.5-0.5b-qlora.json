@@ -1,0 +1,18 @@
+{
+  "model_id": "Qwen/Qwen2.5-0.5B",
+  "revision": "main",
+  "cache_dir": ".cache\\huggingface",
+  "adaptation_mode": "qlora",
+  "torch_dtype": "float16",
+  "max_sequence_length": 1024,
+  "local_files_only": false,
+  "trust_remote_code": false,
+  "gradient_checkpointing": true,
+  "lora_rank": 16,
+  "lora_alpha": 32,
+  "lora_dropout": 0.05,
+  "lora_target_modules": "all-linear",
+  "qlora_quant_type": "nf4",
+  "qlora_double_quant": true,
+  "device_map": null
+}
