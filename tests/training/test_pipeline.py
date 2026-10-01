@@ -11,6 +11,7 @@ from mini_llm.training import TrainingConfig
 from mini_llm.training.checkpoints import load_checkpoint, save_checkpoint
 from mini_llm.training.overfit import OverfitConfig
 from mini_llm.training.progress import calculate_training_plan, format_training_progress
+from mini_llm.training.runtime import save_named_checkpoint
 from mini_llm.training.schemas import TrainingState
 
 
@@ -123,3 +124,33 @@ def test_checkpoint_restores_model_optimizer_and_training_state(tmp_path: Path) 
     assert restored_optimizer.param_groups[0]["lr"] == 5e-4
     for expected, actual in zip(expected_parameters, restored_model.parameters(), strict=True):
         torch.testing.assert_close(actual, expected)
+
+
+def test_named_checkpoint_reports_path_and_elapsed(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    config = _small_config()
+    backend = CustomCausalLMBackend(DecoderOnlyTransformer(config), config)
+    optimizer = AdamW(backend.trainable_parameters(), lr=1e-3)
+    scaler = torch.amp.GradScaler("cuda", enabled=False)
+    training_config = TrainingConfig(
+        checkpoint_dir=tmp_path,
+        batch_size=1,
+        epochs=1,
+        max_steps=None,
+    )
+
+    path = save_named_checkpoint(
+        "unit.pt",
+        config=training_config,
+        model=backend,
+        optimizer=optimizer,
+        scaler=scaler,
+        state=TrainingState(),
+    )
+
+    output = capsys.readouterr().out
+    assert path == tmp_path / "unit.pt"
+    assert "[CHECKPOINT] Начало сохранения name=unit.pt" in output
+    assert "[CHECKPOINT] Сохранение завершено name=unit.pt" in output
+    assert "elapsed=" in output

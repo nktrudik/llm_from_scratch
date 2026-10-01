@@ -387,6 +387,11 @@ terminal progress, tokens/sec и GPU telemetry: имя GPU, allocated/reserved/p
 Во время обучения выводятся `samples_seen`, `tokens_seen`, процент текущей эпохи, текущий loss и
 rolling average loss по последним 100 шагам.
 
+Terminal output использует timestamp и категории `DEVICE`, `MODEL`, `PRETRAINED`, `DATASET`,
+`TOKENS`, `DATALOADER`, `OPTIMIZER`, `TRAIN`, `VALIDATION` и `CHECKPOINT`. Долгая индексация JSONL,
+fallback-пересчёт response tokens и validation периодически показывают процент, elapsed time и
+скорость. Сохранение каждого checkpoint явно сообщает начало, путь и длительность записи.
+
 Training objective — только assistant response. `input_ids` содержат BOS, последние сообщения
 context, role-маркер `ASSISTANT`, response и EOS, но в `labels` context, role-маркер и padding
 заменены на `-100`. Поэтому loss, validation loss и `tokens_seen` учитывают только текст response
@@ -467,6 +472,7 @@ Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:8000/v1/training" -Content
 
 ```powershell
 $body = @{
+    model_backend = "custom"
     prompt = "Привет! Объясни простыми словами, что такое Transformer."
     checkpoint_file = "checkpoints/training/best.pt"
     tokenizer_file = "artifacts/tokenizer/2ch_bpe.json"
@@ -478,9 +484,27 @@ $body = @{
 Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:8000/v1/generate" -ContentType "application/json" -Body $body
 ```
 
-Ручка загружает tokenizer и checkpoint, формирует prompt с `<BOS>`, `<USER>` и `<ASSISTANT>`,
-возвращает текст и новые token IDs. Она не делает модель обученной: качество ответа зависит только
-от checkpoint.
+Для full/LoRA/QLoRA pretrained checkpoint:
+
+```powershell
+$body = @{
+    model_backend = "pretrained"
+    prompt = "Привет! Объясни простыми словами, что такое Transformer."
+    checkpoint_file = "checkpoints/qwen2.5-0.5b-qlora/best.pt"
+    pretrained_config_file = "configs/pretrained/qwen2.5-0.5b-qlora.json"
+    device = "cuda"
+    max_new_tokens = 128
+    temperature = 0.8
+    top_k = 50
+} | ConvertTo-Json
+Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:8000/v1/generate" -ContentType "application/json" -Body $body
+```
+
+Для `custom` ручка использует `BPETokenizer` из `tokenizer_file`. Для `pretrained` передавать
+`tokenizer_file` не требуется: Hugging Face tokenizer всегда определяется полями
+`model_id/revision/cache_dir` из `pretrained_config_file`. Ручка восстанавливает model state из
+training checkpoint и возвращает текст вместе с новыми token IDs. Качество зависит от checkpoint;
+сам вызов inference модель не обучает.
 
 ## Параметры API и вспомогательные CLI
 

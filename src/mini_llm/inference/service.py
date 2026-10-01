@@ -14,10 +14,15 @@ from mini_llm.data.dialogue import ASSISTANT_TOKEN, BOS_TOKEN, EOS_TOKEN, USER_T
 from mini_llm.inference.config import GenerationConfig
 from mini_llm.inference.schemas import GenerationResult
 from mini_llm.modeling import DecoderOnlyTransformer, ModelConfig
+from mini_llm.pretrained import (
+    PretrainedConfig,
+    generate_pretrained,
+    prepare_pretrained_model,
+)
 from mini_llm.tokenization import BPETokenizer
 
 
-def _load_model(checkpoint_file: Path, device: torch.device) -> DecoderOnlyTransformer:
+def _read_checkpoint(checkpoint_file: Path) -> dict[str, object]:
     if not checkpoint_file.is_file():
         raise RuntimeError(f"Checkpoint не найден: {checkpoint_file}")
     try:
@@ -29,35 +34,43 @@ def _load_model(checkpoint_file: Path, device: torch.device) -> DecoderOnlyTrans
         raise RuntimeError(f"Не удалось загрузить checkpoint {checkpoint_file}: {error}") from error
     if not isinstance(payload_object, dict):
         raise RuntimeError("Корень checkpoint должен быть объектом")
-    payload = cast(dict[str, object], payload_object)
+    if not all(isinstance(key, str) for key in payload_object):
+        raise RuntimeError("Ключи checkpoint должны быть строками")
+    return cast(dict[str, object], payload_object)
+
+
+def _checkpoint_model_state(payload: dict[str, object]) -> Mapping[str, Tensor]:
+    state = payload.get("model_state_dict")
+    if not isinstance(state, Mapping):
+        raise RuntimeError("Checkpoint не содержит model_state_dict")
+    if not all(isinstance(key, str) and isinstance(value, Tensor) for key, value in state.items()):
+        raise RuntimeError("model_state_dict checkpoint содержит некорректные значения")
+    return cast(Mapping[str, Tensor], state)
+
+
+def _load_custom_model(checkpoint_file: Path, device: torch.device) -> DecoderOnlyTransformer:
+    payload = _read_checkpoint(checkpoint_file)
     saved_config = payload.get("model_config")
     model_config = ModelConfig()
     if not isinstance(saved_config, dict) or saved_config != asdict(model_config):
         raise RuntimeError("ModelConfig checkpoint не совпадает с текущей архитектурой")
-    state = payload.get("model_state_dict")
-    if not isinstance(state, Mapping):
-        raise RuntimeError("Checkpoint не содержит model_state_dict")
     model = DecoderOnlyTransformer(model_config)
-    model.load_state_dict(cast(Mapping[str, Tensor], state))
+    model.load_state_dict(_checkpoint_model_state(payload))
     model.to(device)
     model.eval()
     return model
 
 
-def generate_response(prompt: str, config: GenerationConfig | None = None) -> GenerationResult:
-    """Сгенерировать ответ модели без автоматического запуска сервера или обучения."""
-
-    active_config = config or GenerationConfig()
-    if not prompt.strip():
-        raise ValueError("prompt не может быть пустым")
-    device = torch.device(active_config.device)
-    if device.type == "cuda" and not torch.cuda.is_available():
-        raise RuntimeError("CUDA недоступна")
-    if device.type not in {"cpu", "cuda"}:
-        raise ValueError("Поддерживаются только устройства cpu и cuda")
-
-    tokenizer = BPETokenizer.load(active_config.tokenizer_file)
-    model = _load_model(active_config.checkpoint_file, device)
+def _generate_custom(
+    prompt: str,
+    config: GenerationConfig,
+    device: torch.device,
+) -> GenerationResult:
+    tokenizer_file = config.tokenizer_file
+    if tokenizer_file is None:
+        raise RuntimeError("Для custom backend не указан tokenizer_file")
+    tokenizer = BPETokenizer.load(tokenizer_file)
+    model = _load_custom_model(config.checkpoint_file, device)
     prompt_ids = [
         tokenizer.token_to_id(BOS_TOKEN),
         tokenizer.token_to_id(USER_TOKEN),
@@ -67,9 +80,9 @@ def generate_response(prompt: str, config: GenerationConfig | None = None) -> Ge
     input_ids = torch.tensor([prompt_ids], dtype=torch.long, device=device)
     generated = model.generate(
         input_ids,
-        max_new_tokens=active_config.max_new_tokens,
-        temperature=active_config.temperature,
-        top_k=active_config.top_k,
+        max_new_tokens=config.max_new_tokens,
+        temperature=config.temperature,
+        top_k=config.top_k,
     )
     new_token_ids = cast(list[int], generated[0, len(prompt_ids) :].tolist())
     eos_id = tokenizer.token_to_id(EOS_TOKEN)
@@ -79,3 +92,46 @@ def generate_response(prompt: str, config: GenerationConfig | None = None) -> Ge
         text=tokenizer.decode(new_token_ids, skip_special_tokens=True),
         token_ids=new_token_ids,
     )
+
+
+def _generate_with_pretrained(
+    prompt: str,
+    config: GenerationConfig,
+    device: torch.device,
+) -> GenerationResult:
+    config_file = config.pretrained_config_file
+    if config_file is None:
+        raise RuntimeError("Для pretrained backend не указан pretrained_config_file")
+    pretrained_config = PretrainedConfig.load(config_file)
+    prepared = prepare_pretrained_model(pretrained_config)
+    payload = _read_checkpoint(config.checkpoint_file)
+    saved_metadata = payload.get("model_metadata")
+    if saved_metadata != prepared.model.checkpoint_metadata:
+        raise RuntimeError("PretrainedConfig не совпадает с model metadata checkpoint")
+    prepared.model.load_checkpoint_state_dict(_checkpoint_model_state(payload))
+    prepared.model.to(device)
+    prepared.model.eval()
+    result = generate_pretrained(
+        prepared,
+        prompt,
+        max_new_tokens=config.max_new_tokens,
+        temperature=config.temperature,
+        top_k=config.top_k,
+    )
+    return GenerationResult(result.text, result.token_ids)
+
+
+def generate_response(prompt: str, config: GenerationConfig | None = None) -> GenerationResult:
+    """Сгенерировать ответ через выбранный custom или pretrained backend."""
+
+    active_config = config or GenerationConfig()
+    if not prompt.strip():
+        raise ValueError("prompt не может быть пустым")
+    device = torch.device(active_config.device)
+    if device.type == "cuda" and not torch.cuda.is_available():
+        raise RuntimeError("CUDA недоступна")
+    if device.type not in {"cpu", "cuda"}:
+        raise ValueError("Поддерживаются только устройства cpu и cuda")
+    if active_config.model_backend == "pretrained":
+        return _generate_with_pretrained(prompt, active_config, device)
+    return _generate_custom(prompt, active_config, device)

@@ -8,6 +8,7 @@ import torch
 from torch.optim import AdamW
 
 from mini_llm.data.dataset import IGNORE_INDEX, DataLoaderConfig, DialogueDataset, create_dataloader
+from mini_llm.observability import ProgressThrottle, terminal_log, terminal_stage
 from mini_llm.training.checkpoints import load_checkpoint
 from mini_llm.training.components import create_training_components
 from mini_llm.training.config import TrainingConfig
@@ -25,40 +26,73 @@ from mini_llm.training.schemas import TrainingResult, TrainingState
 def train_model(config: TrainingConfig | None = None) -> TrainingResult:
     """Запустить обучение, validation и checkpointing на одном устройстве."""
 
+    training_started_at = time.perf_counter()
     active_config = config or TrainingConfig()
-    device = select_device(active_config.device)
-    use_amp = active_config.mixed_precision and device.type == "cuda"
+    terminal_log(
+        "TRAINING",
+        f"Pipeline запущен backend={active_config.model_backend} "
+        f"checkpoint_dir={active_config.checkpoint_dir}",
+    )
+    with terminal_stage("DEVICE", f"выбор устройства requested={active_config.device}"):
+        device = select_device(active_config.device)
+        use_amp = active_config.mixed_precision and device.type == "cuda"
+    gpu_name = torch.cuda.get_device_name(device) if device.type == "cuda" else "CPU"
+    terminal_log("DEVICE", f"Выбрано device={device} name={gpu_name} AMP={use_amp}")
     torch.manual_seed(active_config.random_seed)
     if device.type == "cuda":
         torch.cuda.manual_seed_all(active_config.random_seed)
         torch.cuda.reset_peak_memory_stats(device)
 
-    components = create_training_components(active_config, device)
+    with terminal_stage(
+        "MODEL",
+        f"загрузка/подготовка backend={active_config.model_backend} и tokenizer",
+    ):
+        components = create_training_components(active_config, device)
     tokenizer = components.tokenizer
     model = components.model
-    train_dataset = DialogueDataset(
-        active_config.splits_dir / "train.jsonl",
-        tokenizer,
-        max_sequence_length=model.max_sequence_length,
+    total_parameters = sum(parameter.numel() for parameter in model.module.parameters())
+    trainable_parameters = sum(
+        parameter.numel() for parameter in model.module.parameters() if parameter.requires_grad
     )
-    validation_dataset = DialogueDataset(
-        active_config.splits_dir / "validation.jsonl",
-        tokenizer,
-        max_sequence_length=model.max_sequence_length,
+    terminal_log(
+        "MODEL",
+        f"Backend готов: backend={active_config.model_backend} "
+        f"total_parameters={total_parameters:,} trainable_parameters={trainable_parameters:,}",
     )
+    train_file = active_config.splits_dir / "train.jsonl"
+    with terminal_stage("DATASET", f"создание train Dataset file={train_file}"):
+        train_dataset = DialogueDataset(
+            train_file,
+            tokenizer,
+            max_sequence_length=model.max_sequence_length,
+        )
+    validation_file = active_config.splits_dir / "validation.jsonl"
+    with terminal_stage("DATASET", f"создание validation Dataset file={validation_file}"):
+        validation_dataset = DialogueDataset(
+            validation_file,
+            tokenizer,
+            max_sequence_length=model.max_sequence_length,
+        )
     if len(train_dataset) == 0 or len(validation_dataset) == 0:
         raise RuntimeError("Train и validation Dataset должны содержать пригодные samples")
-    plan = calculate_training_plan(
-        len(train_dataset),
-        active_config.batch_size,
-        epochs=active_config.epochs,
-        max_steps=active_config.max_steps,
+    with terminal_stage("PLAN", "расчёт training plan"):
+        plan = calculate_training_plan(
+            len(train_dataset),
+            active_config.batch_size,
+            epochs=active_config.epochs,
+            max_steps=active_config.max_steps,
+        )
+    terminal_log(
+        "PLAN",
+        f"steps_per_epoch={plan.steps_per_epoch} "
+        f"planned_total_steps={plan.planned_total_steps} planned_epochs={plan.planned_epochs}",
     )
-    train_token_count, token_count_source = effective_train_tokens(
-        active_config.token_statistics_file,
-        train_dataset,
-        max_sequence_length=model.max_sequence_length,
-    )
+    with terminal_stage("TOKENS", "расчёт effective train tokens"):
+        train_token_count, token_count_source = effective_train_tokens(
+            active_config.token_statistics_file,
+            train_dataset,
+            max_sequence_length=model.max_sequence_length,
+        )
 
     loader_config = DataLoaderConfig(
         batch_size=active_config.batch_size,
@@ -66,22 +100,32 @@ def train_model(config: TrainingConfig | None = None) -> TrainingResult:
         random_seed=active_config.random_seed,
         pin_memory=device.type == "cuda",
     )
-    validation_loader = create_dataloader(validation_dataset, loader_config, shuffle=False)
-    optimizer = AdamW(
-        model.trainable_parameters(),
-        lr=active_config.learning_rate,
-        weight_decay=active_config.weight_decay,
-    )
-    scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
+    with terminal_stage("DATALOADER", "создание validation DataLoader"):
+        validation_loader = create_dataloader(validation_dataset, loader_config, shuffle=False)
+    with terminal_stage("OPTIMIZER", "создание AdamW и AMP GradScaler"):
+        optimizer = AdamW(
+            model.trainable_parameters(),
+            lr=active_config.learning_rate,
+            weight_decay=active_config.weight_decay,
+        )
+        scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
     state = TrainingState()
     if active_config.resume_from is not None:
-        state = load_checkpoint(
-            active_config.resume_from,
-            model=model,
-            optimizer=optimizer,
-            scaler=scaler,
-            learning_rate=active_config.learning_rate,
-            expected_batch_size=active_config.batch_size,
+        with terminal_stage(
+            "CHECKPOINT", f"загрузка resume checkpoint path={active_config.resume_from}"
+        ):
+            state = load_checkpoint(
+                active_config.resume_from,
+                model=model,
+                optimizer=optimizer,
+                scaler=scaler,
+                learning_rate=active_config.learning_rate,
+                expected_batch_size=active_config.batch_size,
+            )
+        terminal_log(
+            "CHECKPOINT",
+            f"Resume восстановлен step={state.global_step} epoch={state.epoch + 1} "
+            f"batches_completed={state.batches_completed_in_epoch}",
         )
     if state.global_step > plan.planned_total_steps:
         raise RuntimeError(
@@ -90,19 +134,20 @@ def train_model(config: TrainingConfig | None = None) -> TrainingResult:
     if state.epoch >= plan.planned_epochs and state.global_step < plan.planned_total_steps:
         raise RuntimeError("Позиция эпохи в checkpoint несовместима с текущим планом")
 
-    gpu_name = torch.cuda.get_device_name(device) if device.type == "cuda" else "CPU"
-    print(
+    terminal_log(
+        "TRAINING",
         f"Training start: device={device} ({gpu_name}), AMP={use_amp}, "
         f"train_samples={len(train_dataset)}, validation_samples={len(validation_dataset)}, "
         f"batch_size={active_config.batch_size}, max_sequence_length="
         f"{model.max_sequence_length}, backend={active_config.model_backend}, "
-        f"start_step={state.global_step}"
+        f"start_step={state.global_step}",
     )
-    print(
+    terminal_log(
+        "TRAINING",
         f"Training plan: steps_per_epoch={plan.steps_per_epoch}, "
         f"planned_total_steps={plan.planned_total_steps}, "
         f"train_samples={len(train_dataset)}, effective_train_tokens={train_token_count} "
-        f"(source={token_count_source})"
+        f"(source={token_count_source})",
     )
     last_validation_step = -1
     interrupted = False
@@ -114,21 +159,48 @@ def train_model(config: TrainingConfig | None = None) -> TrainingResult:
 
     try:
         for epoch in range(state.epoch, plan.planned_epochs):
+            epoch_started_at = time.perf_counter()
+            skip_batches = state.batches_completed_in_epoch if epoch == state.epoch else 0
+            terminal_log(
+                "EPOCH",
+                f"Начало epoch={epoch + 1}/{plan.planned_epochs} "
+                f"steps_per_epoch={plan.steps_per_epoch} resume_skip_batches={skip_batches}",
+            )
             epoch_loader_config = DataLoaderConfig(
                 batch_size=active_config.batch_size,
                 num_workers=active_config.num_workers,
                 random_seed=active_config.random_seed + epoch,
                 pin_memory=device.type == "cuda",
             )
-            train_loader = create_dataloader(train_dataset, epoch_loader_config, shuffle=True)
-            skip_batches = state.batches_completed_in_epoch if epoch == state.epoch else 0
+            with terminal_stage("DATALOADER", f"создание train DataLoader для epoch={epoch + 1}"):
+                train_loader = create_dataloader(train_dataset, epoch_loader_config, shuffle=True)
             model.train()
+            first_batch_logged = False
+            skip_throttle = ProgressThrottle(every_items=500, every_seconds=5.0)
+            terminal_log("TRAIN", f"Ожидание первого batch для epoch={epoch + 1}")
             for batch_index, batch in enumerate(train_loader):
                 if batch_index < skip_batches:
+                    skipped = batch_index + 1
+                    if skip_throttle.should_report(skipped):
+                        terminal_log(
+                            "TRAIN",
+                            f"Resume: пропуск уже обработанных batches={skipped}/{skip_batches}",
+                            elapsed=time.perf_counter() - epoch_started_at,
+                        )
                     continue
                 if state.global_step >= plan.planned_total_steps:
                     stop_requested = True
                     break
+                if not first_batch_logged:
+                    response_tokens = int((batch["labels"] != IGNORE_INDEX).sum().item())
+                    terminal_log(
+                        "TRAIN",
+                        f"Первый batch получен epoch={epoch + 1} batch={batch_index + 1} "
+                        f"shape={tuple(batch['input_ids'].shape)} "
+                        f"response_tokens={response_tokens}",
+                        elapsed=time.perf_counter() - epoch_started_at,
+                    )
+                    first_batch_logged = True
                 input_ids = batch["input_ids"].to(device, non_blocking=True)
                 attention_mask = batch["attention_mask"].to(device, non_blocking=True)
                 labels = batch["labels"].to(device, non_blocking=True)
@@ -169,7 +241,8 @@ def train_model(config: TrainingConfig | None = None) -> TrainingResult:
                         torch.cuda.synchronize(device)
                     elapsed = max(time.perf_counter() - log_started, 1e-9)
                     learning_rate = float(optimizer.param_groups[0]["lr"])
-                    print(
+                    terminal_log(
+                        "TRAIN",
                         format_training_progress(
                             epoch=epoch + 1,
                             planned_epochs=plan.planned_epochs,
@@ -183,7 +256,7 @@ def train_model(config: TrainingConfig | None = None) -> TrainingResult:
                             learning_rate=learning_rate,
                             tokens_per_second=tokens_since_log / elapsed,
                             telemetry=gpu_telemetry(device),
-                        )
+                        ),
                     )
                     loss_since_log = 0.0
                     steps_since_log = 0
@@ -191,19 +264,21 @@ def train_model(config: TrainingConfig | None = None) -> TrainingResult:
                     log_started = time.perf_counter()
 
                 if state.global_step % active_config.validation_interval == 0:
-                    validation_loss = evaluate_validation_loss(
-                        model,
-                        validation_loader,
-                        device=device,
-                        use_amp=use_amp,
-                        amp_dtype=model.autocast_dtype,
-                        max_batches=active_config.validation_batches,
-                    )
+                    with terminal_stage("VALIDATION", f"validation на step={state.global_step}"):
+                        validation_loss = evaluate_validation_loss(
+                            model,
+                            validation_loader,
+                            device=device,
+                            use_amp=use_amp,
+                            amp_dtype=model.autocast_dtype,
+                            max_batches=active_config.validation_batches,
+                        )
                     state.last_validation_loss = validation_loss
                     last_validation_step = state.global_step
-                    print(
+                    terminal_log(
+                        "VALIDATION",
                         f"validation step={state.global_step} "
-                        f"validation_loss={validation_loss:.6f} {gpu_telemetry(device)}"
+                        f"validation_loss={validation_loss:.6f} {gpu_telemetry(device)}",
                     )
                     if validation_loss < state.best_validation_loss:
                         state.best_validation_loss = validation_loss
@@ -215,7 +290,7 @@ def train_model(config: TrainingConfig | None = None) -> TrainingResult:
                             scaler=scaler,
                             state=state,
                         )
-                        print(f"Best checkpoint сохранён: {best_path}")
+                        terminal_log("CHECKPOINT", f"Best checkpoint обновлён: {best_path}")
 
                 if state.global_step % active_config.checkpoint_interval == 0:
                     checkpoint_path = save_named_checkpoint(
@@ -226,7 +301,7 @@ def train_model(config: TrainingConfig | None = None) -> TrainingResult:
                         scaler=scaler,
                         state=state,
                     )
-                    print(f"Checkpoint сохранён: {checkpoint_path}")
+                    terminal_log("CHECKPOINT", f"Periodic checkpoint готов: {checkpoint_path}")
 
                 if state.global_step >= plan.planned_total_steps:
                     stop_requested = True
@@ -236,19 +311,26 @@ def train_model(config: TrainingConfig | None = None) -> TrainingResult:
                 break
             state.epoch = epoch + 1
             state.batches_completed_in_epoch = 0
+            terminal_log(
+                "EPOCH",
+                f"Epoch завершена epoch={epoch + 1}/{plan.planned_epochs} "
+                f"global_step={state.global_step}",
+                elapsed=time.perf_counter() - epoch_started_at,
+            )
     except KeyboardInterrupt:
         interrupted = True
-        print("Получен KeyboardInterrupt; сохраняется last checkpoint...")
+        terminal_log("TRAINING", "Получен KeyboardInterrupt; сохраняется last checkpoint")
 
     if not interrupted and state.global_step > 0 and last_validation_step != state.global_step:
-        validation_loss = evaluate_validation_loss(
-            model,
-            validation_loader,
-            device=device,
-            use_amp=use_amp,
-            amp_dtype=model.autocast_dtype,
-            max_batches=active_config.validation_batches,
-        )
+        with terminal_stage("VALIDATION", f"финальная validation на step={state.global_step}"):
+            validation_loss = evaluate_validation_loss(
+                model,
+                validation_loader,
+                device=device,
+                use_amp=use_amp,
+                amp_dtype=model.autocast_dtype,
+                max_batches=active_config.validation_batches,
+            )
         state.last_validation_loss = validation_loss
         if validation_loss < state.best_validation_loss:
             state.best_validation_loss = validation_loss
@@ -260,7 +342,7 @@ def train_model(config: TrainingConfig | None = None) -> TrainingResult:
                 scaler=scaler,
                 state=state,
             )
-        print(f"final validation_loss={validation_loss:.6f}")
+        terminal_log("VALIDATION", f"final validation_loss={validation_loss:.6f}")
 
     last_checkpoint = save_named_checkpoint(
         "last.pt",
@@ -270,10 +352,12 @@ def train_model(config: TrainingConfig | None = None) -> TrainingResult:
         scaler=scaler,
         state=state,
     )
-    print(
+    terminal_log(
+        "TRAINING",
         f"Training завершён: step={state.global_step}, "
         f"best_validation_loss={state.best_validation_loss:.6f}, "
-        f"last_checkpoint={last_checkpoint}, interrupted={interrupted}"
+        f"last_checkpoint={last_checkpoint}, interrupted={interrupted}",
+        elapsed=time.perf_counter() - training_started_at,
     )
     return TrainingResult(
         state.global_step,

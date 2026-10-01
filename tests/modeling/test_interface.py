@@ -17,18 +17,15 @@ class _FakeHuggingFaceModel(nn.Module):
     def __init__(self) -> None:
         super().__init__()
         self.projection = nn.Linear(4, 8)
-        self.received_labels: Tensor | None = None
 
     def forward(
         self,
         *,
         input_ids: Tensor,
         attention_mask: Tensor,
-        labels: Tensor,
         use_cache: bool,
     ) -> _FakeOutput:
         del attention_mask, use_cache
-        self.received_labels = labels
         logits = self.projection(torch.nn.functional.one_hot(input_ids, num_classes=4).float())
         return _FakeOutput(logits, logits.sum() * 0 + 1.0)
 
@@ -70,5 +67,10 @@ def test_pretrained_model_uses_the_same_backend_contract() -> None:
     output = backend.forward_batch(input_ids, torch.ones_like(input_ids), labels)
 
     assert output.logits.shape == (1, 5, 8)
-    assert module.received_labels is labels
+    expected_loss = torch.nn.functional.cross_entropy(
+        output.logits.reshape(-1, output.logits.size(-1)),
+        labels.reshape(-1),
+        ignore_index=-100,
+    )
+    torch.testing.assert_close(output.loss, expected_loss)
     assert backend.checkpoint_metadata["backend"] == "pretrained"

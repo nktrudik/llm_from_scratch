@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 import torch
 from torch.optim import Optimizer
 
 from mini_llm.modeling import CausalLMBackend
+from mini_llm.observability import terminal_log
 from mini_llm.training.checkpoints import save_checkpoint
 from mini_llm.training.config import TrainingConfig
 from mini_llm.training.schemas import TrainingState
@@ -60,12 +62,27 @@ def save_named_checkpoint(
     """Сохранить checkpoint с заданным именем в каталоге текущего запуска."""
 
     path = config.checkpoint_dir / name
-    save_checkpoint(
-        path,
-        model=model,
-        optimizer=optimizer,
-        scaler=scaler,
-        training_config=training_config_payload(config),
-        state=state,
+    started_at = time.perf_counter()
+    terminal_log("CHECKPOINT", f"Начало сохранения name={name} path={path}")
+    try:
+        save_checkpoint(
+            path,
+            model=model,
+            optimizer=optimizer,
+            scaler=scaler,
+            training_config=training_config_payload(config),
+            state=state,
+        )
+    except Exception:
+        terminal_log(
+            "CHECKPOINT",
+            f"Сохранение завершилось ошибкой name={name} path={path}",
+            elapsed=time.perf_counter() - started_at,
+        )
+        raise
+    terminal_log(
+        "CHECKPOINT",
+        f"Сохранение завершено name={name} path={path}",
+        elapsed=time.perf_counter() - started_at,
     )
     return path

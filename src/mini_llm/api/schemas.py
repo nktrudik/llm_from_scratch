@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Self
+from typing import Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -174,8 +174,10 @@ class GenerationRequest(BaseModel):
     """Prompt и параметры генерации ответа."""
 
     prompt: str = Field(min_length=1)
+    model_backend: Literal["custom", "pretrained"] = "custom"
     checkpoint_file: Path = Field(default_factory=lambda: Path("checkpoints/training/best.pt"))
-    tokenizer_file: Path = Field(default_factory=lambda: DEFAULT_TOKENIZER_PATH)
+    tokenizer_file: Path | None = Field(default_factory=lambda: DEFAULT_TOKENIZER_PATH)
+    pretrained_config_file: Path | None = None
     device: str = "cuda"
     max_new_tokens: int = Field(default=256, ge=0)
     temperature: float = Field(default=0.3, gt=0)
@@ -185,17 +187,28 @@ class GenerationRequest(BaseModel):
         json_schema_extra={
             "examples": [
                 {
+                    "model_backend": "pretrained",
                     "prompt": "Привет! Как у тебя дела?",
-                    "checkpoint_file": "checkpoints/training/best.pt",
-                    "tokenizer_file": "artifacts/tokenizer/2ch_bpe.json",
+                    "checkpoint_file": "checkpoints/qwen2.5-0.5b-qlora/best.pt",
+                    "pretrained_config_file": ("configs/pretrained/qwen2.5-0.5b-qlora.json"),
                     "device": "cuda",
                     "max_new_tokens": 256,
                     "temperature": 0.3,
                     "top_k": 20,
-                }
+                },
             ]
         }
     )
+
+    @model_validator(mode="after")
+    def validate_backend_files(self) -> Self:
+        """Проверить только обязательные для выбранного backend файлы."""
+
+        if self.model_backend == "custom" and self.tokenizer_file is None:
+            raise ValueError("Для custom backend нужен tokenizer_file")
+        if self.model_backend == "pretrained" and self.pretrained_config_file is None:
+            raise ValueError("Для pretrained backend нужен pretrained_config_file")
+        return self
 
     def to_config(self) -> GenerationConfig:
         """Преобразовать параметры запроса во внутреннюю конфигурацию генерации."""

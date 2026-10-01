@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import time
 from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -24,9 +25,12 @@ from mini_llm.data.dialogue import (
 from mini_llm.data.interfaces import DialogueTokenizer, OversizedResponseError
 from mini_llm.data.splitting import SPLIT_NAMES
 from mini_llm.modeling.config import DEFAULT_MAX_SEQUENCE_LENGTH, ModelConfig
+from mini_llm.observability import ProgressThrottle, terminal_log
 from mini_llm.tokenization import DEFAULT_TOKENIZER_PATH, BPETokenizer
 
 IGNORE_INDEX = -100
+INDEX_PROGRESS_SAMPLES = 5_000
+INDEX_PROGRESS_SECONDS = 5.0
 
 
 class CausalLMItem(TypedDict):
@@ -98,11 +102,23 @@ class DialogueDataset(Dataset[CausalLMItem]):
         return parse_dialogue_sample(payload, location)
 
     def _build_index(self) -> None:
+        started_at = time.perf_counter()
+        try:
+            file_size = self.split_file.stat().st_size
+        except OSError:
+            file_size = 0
+        terminal_log(
+            "DATASET",
+            f"Начало индексации file={self.split_file} size_bytes={file_size}",
+        )
+        throttle = ProgressThrottle(INDEX_PROGRESS_SAMPLES, INDEX_PROGRESS_SECONDS)
+        current_position = 0
         with self.split_file.open("rb") as source:
             line_number = 0
             while True:
                 offset = source.tell()
                 line = source.readline()
+                current_position = source.tell()
                 if not line:
                     break
                 line_number += 1
@@ -117,10 +133,31 @@ class DialogueDataset(Dataset[CausalLMItem]):
                 except OversizedResponseError:
                     self.oversized_response_count += 1
                     self.oversized_responses_by_board[sample.board] += 1
-                    continue
-                self._offsets.append(offset)
+                else:
+                    self._offsets.append(offset)
+                if throttle.should_report(self.scanned_samples):
+                    elapsed = max(time.perf_counter() - started_at, 1e-9)
+                    percentage = 100.0 * current_position / file_size if file_size else 0.0
+                    terminal_log(
+                        "DATASET",
+                        f"Индексация file={self.split_file.name} "
+                        f"scanned={self.scanned_samples} usable={len(self._offsets)} "
+                        f"oversized={self.oversized_response_count} "
+                        f"progress={percentage:.2f}% "
+                        f"speed={self.scanned_samples / elapsed:.1f} samples/sec",
+                        elapsed=elapsed,
+                    )
                 if self.max_samples is not None and len(self._offsets) >= self.max_samples:
                     break
+        elapsed = max(time.perf_counter() - started_at, 1e-9)
+        percentage = 100.0 * current_position / file_size if file_size else 100.0
+        terminal_log(
+            "DATASET",
+            f"Индексация завершена file={self.split_file} scanned={self.scanned_samples} "
+            f"usable={len(self._offsets)} oversized={self.oversized_response_count} "
+            f"progress={percentage:.2f}% speed={self.scanned_samples / elapsed:.1f} samples/sec",
+            elapsed=elapsed,
+        )
 
     def __len__(self) -> int:
         return len(self._offsets)

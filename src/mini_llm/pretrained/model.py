@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -12,6 +13,7 @@ from torch import Tensor, nn
 from torch.nn import functional as F
 
 from mini_llm.modeling import CausalLMBackend, CausalLMOutput
+from mini_llm.observability import terminal_log
 from mini_llm.pretrained.config import PretrainedConfig
 from mini_llm.pretrained.dependencies import require_module
 from mini_llm.pretrained.tokenizer import HuggingFaceDialogueTokenizer
@@ -157,8 +159,16 @@ def _torch_dtype(name: str) -> torch.dtype | str:
 def prepare_pretrained_model(config: PretrainedConfig) -> PreparedPretrained:
     """Загрузить модель/tokenizer и применить выбранный режим fine-tuning."""
 
+    total_started_at = time.perf_counter()
+    terminal_log(
+        "PRETRAINED",
+        f"Подготовка начата model_id={config.model_id} revision={config.revision} "
+        f"adaptation_mode={config.adaptation_mode} cache_dir={config.cache_dir}",
+    )
     transformers = require_module("transformers")
     tokenizer_factory = transformers.AutoTokenizer
+    tokenizer_started_at = time.perf_counter()
+    terminal_log("PRETRAINED", f"Начало загрузки tokenizer model_id={config.model_id}")
     tokenizer_object = _from_pretrained(
         tokenizer_factory,
         config.model_id,
@@ -169,6 +179,11 @@ def prepare_pretrained_model(config: PretrainedConfig) -> PreparedPretrained:
         use_fast=True,
     )
     tokenizer = HuggingFaceDialogueTokenizer(tokenizer_object)
+    terminal_log(
+        "PRETRAINED",
+        f"Tokenizer загружен model_id={config.model_id} vocab_size={tokenizer.vocab_size}",
+        elapsed=time.perf_counter() - tokenizer_started_at,
+    )
 
     model_kwargs: dict[str, object] = {
         "revision": config.revision,
@@ -190,12 +205,22 @@ def prepare_pretrained_model(config: PretrainedConfig) -> PreparedPretrained:
         model_kwargs["device_map"] = config.device_map or "auto"
 
     model_factory = transformers.AutoModelForCausalLM
+    weights_started_at = time.perf_counter()
+    terminal_log(
+        "PRETRAINED",
+        f"Начало загрузки весов model_id={config.model_id} "
+        f"adaptation_mode={config.adaptation_mode}",
+    )
     model_object = _from_pretrained(model_factory, config.model_id, **model_kwargs)
     if not isinstance(model_object, nn.Module):
         raise RuntimeError("AutoModelForCausalLM вернул объект, не являющийся nn.Module")
     model = model_object
+    terminal_log(
+        "PRETRAINED",
+        f"Веса загружены model_id={config.model_id}; начинается подготовка backend",
+        elapsed=time.perf_counter() - weights_started_at,
+    )
     resizable_model = cast(_ResizableModel, model)
-    resizable_model.resize_token_embeddings(tokenizer.vocab_size)
 
     model_config = cast(_ModelConfig | None, getattr(model, "config", None))
     if model_config is not None:
@@ -228,7 +253,19 @@ def prepare_pretrained_model(config: PretrainedConfig) -> PreparedPretrained:
         apply_peft = cast(Callable[[nn.Module, object], nn.Module], peft.get_peft_model)
         model = apply_peft(model, lora_config)
 
-    return PreparedPretrained(HuggingFaceCausalLMBackend(model, config), tokenizer)
+    prepared = PreparedPretrained(HuggingFaceCausalLMBackend(model, config), tokenizer)
+    total_parameters = prepared.total_parameters
+    trainable_parameters = prepared.trainable_parameters
+    trainable_percent = 100.0 * trainable_parameters / total_parameters if total_parameters else 0.0
+    terminal_log(
+        "PRETRAINED",
+        f"Подготовка завершена model_id={config.model_id} "
+        f"adaptation_mode={config.adaptation_mode} total_parameters={total_parameters:,} "
+        f"trainable_parameters={trainable_parameters:,} "
+        f"trainable_percent={trainable_percent:.4f}%",
+        elapsed=time.perf_counter() - total_started_at,
+    )
+    return prepared
 
 
 def save_pretrained_parameters(config: PretrainedConfig, path: Path) -> None:

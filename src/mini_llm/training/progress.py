@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import json
 import math
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 
 from mini_llm.data.dataset import IGNORE_INDEX, DialogueDataset
+from mini_llm.observability import ProgressThrottle, terminal_log
 
 
 @dataclass(frozen=True, slots=True)
@@ -108,10 +110,43 @@ def effective_train_tokens(
                 and train.get("usable_samples") == len(dataset)
                 and isinstance(train.get("training_loss_tokens"), int)
             ):
-                return cast(int, train["training_loss_tokens"]), str(statistics_file)
+                token_count = cast(int, train["training_loss_tokens"])
+                terminal_log(
+                    "TOKENS",
+                    f"Effective train tokens прочитаны из statistics JSON: "
+                    f"file={statistics_file} training_loss_tokens={token_count}",
+                )
+                return token_count, str(statistics_file)
 
-    token_count = sum(
-        int((dataset[index]["labels"] != IGNORE_INDEX).sum().item())
-        for index in range(len(dataset))
+    total_samples = len(dataset)
+    terminal_log(
+        "TOKENS",
+        "Готовая response-only статистика не найдена; начинается fallback full Dataset scan "
+        f"samples={total_samples}",
+    )
+    started_at = time.perf_counter()
+    throttle = ProgressThrottle(every_items=5_000, every_seconds=5.0)
+    token_count = 0
+    for index in range(total_samples):
+        token_count += int((dataset[index]["labels"] != IGNORE_INDEX).sum().item())
+        processed = index + 1
+        if throttle.should_report(processed):
+            elapsed = max(time.perf_counter() - started_at, 1e-9)
+            percentage = 100.0 * processed / total_samples if total_samples else 100.0
+            terminal_log(
+                "TOKENS",
+                f"Fallback scan processed={processed}/{total_samples} "
+                f"progress={percentage:.2f}% "
+                f"speed={processed / elapsed:.1f} samples/sec "
+                f"training_loss_tokens={token_count}",
+                elapsed=elapsed,
+            )
+    elapsed = max(time.perf_counter() - started_at, 1e-9)
+    terminal_log(
+        "TOKENS",
+        f"Fallback scan завершён processed={total_samples}/{total_samples} "
+        f"progress=100.00% speed={total_samples / elapsed:.1f} samples/sec "
+        f"training_loss_tokens={token_count}",
+        elapsed=elapsed,
     )
     return token_count, "расчёт по train Dataset"

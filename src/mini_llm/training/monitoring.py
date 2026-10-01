@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import time
+
 import torch
 from torch.utils.data import DataLoader
 
 from mini_llm.data.dataset import IGNORE_INDEX, CausalLMBatch
 from mini_llm.modeling import CausalLMBackend
+from mini_llm.observability import ProgressThrottle, terminal_log
 
 
 def gpu_telemetry(device: torch.device) -> str:
@@ -34,8 +37,17 @@ def evaluate_validation_loss(
     """Посчитать взвешенный по токенам validation loss."""
 
     model.eval()
+    started_at = time.perf_counter()
+    available_batches = len(loader)
+    planned_batches = min(available_batches, max_batches) if max_batches else available_batches
+    terminal_log(
+        "VALIDATION",
+        f"Расчёт validation loss начат planned_batches={planned_batches}",
+    )
+    throttle = ProgressThrottle(every_items=25, every_seconds=5.0)
     weighted_loss = 0.0
     token_count = 0
+    completed_batches = 0
     for batch_index, batch in enumerate(loader):
         if max_batches and batch_index >= max_batches:
             break
@@ -47,7 +59,25 @@ def evaluate_validation_loss(
         valid_tokens = int((labels != IGNORE_INDEX).sum().item())
         weighted_loss += output.loss.item() * valid_tokens
         token_count += valid_tokens
+        completed_batches = batch_index + 1
+        if throttle.should_report(completed_batches):
+            elapsed = max(time.perf_counter() - started_at, 1e-9)
+            percentage = 100.0 * completed_batches / planned_batches if planned_batches else 100.0
+            accumulated_loss = weighted_loss / token_count if token_count else float("nan")
+            terminal_log(
+                "VALIDATION",
+                f"batch={completed_batches}/{planned_batches} progress={percentage:.2f}% "
+                f"accumulated_loss={accumulated_loss:.6f}",
+                elapsed=elapsed,
+            )
     model.train()
     if token_count == 0:
         raise RuntimeError("Validation DataLoader не содержит target tokens")
-    return weighted_loss / token_count
+    validation_loss = weighted_loss / token_count
+    terminal_log(
+        "VALIDATION",
+        f"Расчёт завершён batches={completed_batches}/{planned_batches} "
+        f"validation_loss={validation_loss:.6f}",
+        elapsed=time.perf_counter() - started_at,
+    )
+    return validation_loss

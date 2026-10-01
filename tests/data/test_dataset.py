@@ -14,8 +14,10 @@ from mini_llm.data.dialogue import (
     USER_TOKEN,
     DialogueSample,
 )
-from mini_llm.modeling import DecoderOnlyTransformer, ModelConfig
+from mini_llm.modeling import CustomCausalLMBackend, DecoderOnlyTransformer, ModelConfig
 from mini_llm.tokenization import BPETokenizer, train_bpe_tokenizer
+from mini_llm.training.monitoring import evaluate_validation_loss
+from mini_llm.training.progress import effective_train_tokens
 
 MAX_LENGTH = 40
 
@@ -74,8 +76,11 @@ def _contains_subsequence(values: list[int], expected: list[int]) -> bool:
     )
 
 
-def test_dataset_skips_oversized_response_and_builds_shifted_sequence(tmp_path: Path) -> None:
+def test_dataset_skips_oversized_response_and_builds_shifted_sequence(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
     dataset, tokenizer = _prepare_dataset(tmp_path)
+    progress_output = capsys.readouterr().out
 
     assert len(dataset) == 3
     assert dataset.oversized_response_count == 1
@@ -102,6 +107,9 @@ def test_dataset_skips_oversized_response_and_builds_shifted_sequence(tmp_path: 
     assert _contains_subsequence(sequence, tokenizer.encode("ПОСЛЕДНЕЕ СООБЩЕНИЕ"))
     assert labels[: encoded.response_start - 1] == [IGNORE_INDEX] * (encoded.response_start - 1)
     assert labels[encoded.response_start - 1 :] == sequence[encoded.response_start :]
+    assert "[DATASET] Начало индексации" in progress_output
+    assert "[DATASET] Индексация завершена" in progress_output
+    assert "scanned=4 usable=3 oversized=1" in progress_output
 
 
 def test_loss_labels_include_only_response_and_eos(tmp_path: Path) -> None:
@@ -114,6 +122,61 @@ def test_loss_labels_include_only_response_and_eos(tmp_path: Path) -> None:
         len(encoded.token_ids) - encoded.response_start
     )
     assert item["labels"][-1].item() == tokenizer.token_to_id(EOS_TOKEN)
+
+
+def test_effective_token_fallback_reports_scan_progress(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    dataset, _ = _prepare_dataset(tmp_path)
+    capsys.readouterr()
+
+    token_count, source = effective_train_tokens(
+        tmp_path / "missing_statistics.json",
+        dataset,
+        max_sequence_length=MAX_LENGTH,
+    )
+
+    output = capsys.readouterr().out
+    assert token_count > 0
+    assert source == "расчёт по train Dataset"
+    assert "fallback full Dataset scan" in output
+    assert "processed=3/3" in output
+    assert f"training_loss_tokens={token_count}" in output
+
+
+def test_effective_tokens_reports_statistics_json_source(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    dataset, _ = _prepare_dataset(tmp_path)
+    statistics_file = tmp_path / "statistics.json"
+    statistics_file.write_text(
+        json.dumps(
+            {
+                "max_sequence_length": MAX_LENGTH,
+                "training_objective": "response_only",
+                "splits": {
+                    "train": {
+                        "usable_samples": len(dataset),
+                        "training_loss_tokens": 123,
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    capsys.readouterr()
+
+    token_count, source = effective_train_tokens(
+        statistics_file,
+        dataset,
+        max_sequence_length=MAX_LENGTH,
+    )
+
+    output = capsys.readouterr().out
+    assert token_count == 123
+    assert source == str(statistics_file)
+    assert "прочитаны из statistics JSON" in output
+    assert "training_loss_tokens=123" in output
 
 
 def test_dataloader_pads_targets_and_keeps_incomplete_last_batch(tmp_path: Path) -> None:
@@ -158,3 +221,39 @@ def test_batch_runs_through_transformer_with_finite_loss(tmp_path: Path) -> None
 
     assert logits.shape[:2] == batch["input_ids"].shape
     assert torch.isfinite(loss)
+
+
+def test_validation_reports_periodic_progress(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    dataset, tokenizer = _prepare_dataset(tmp_path)
+    loader = create_dataloader(
+        dataset,
+        DataLoaderConfig(batch_size=2, num_workers=0),
+        shuffle=False,
+    )
+    config = ModelConfig(
+        vocab_size=tokenizer.vocab_size,
+        max_sequence_length=MAX_LENGTH,
+        num_layers=1,
+        d_model=32,
+        num_heads=4,
+        dropout=0.0,
+    )
+    backend = CustomCausalLMBackend(DecoderOnlyTransformer(config), config)
+    capsys.readouterr()
+
+    loss = evaluate_validation_loss(
+        backend,
+        loader,
+        device=torch.device("cpu"),
+        use_amp=False,
+        amp_dtype=torch.float16,
+        max_batches=2,
+    )
+
+    output = capsys.readouterr().out
+    assert torch.isfinite(torch.tensor(loss))
+    assert "[VALIDATION] Расчёт validation loss начат planned_batches=2" in output
+    assert "batch=1/2" in output
+    assert "[VALIDATION] Расчёт завершён batches=2/2" in output
