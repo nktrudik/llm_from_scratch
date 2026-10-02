@@ -36,8 +36,13 @@ class HuggingFaceTokenizerProtocol(Protocol):
     def save_pretrained(self, save_directory: str) -> object: ...
 
     def apply_chat_template(
-        self, conversation: list[dict[str, str]], *, tokenize: bool, add_generation_prompt: bool
-    ) -> object: ...
+            self,
+            conversation: list[dict[str, str]],
+            *,
+            tokenize: bool,
+            add_generation_prompt: bool,
+            return_dict: bool,
+        ) -> object: ...
 
 
 class HuggingFaceDialogueTokenizer:
@@ -122,14 +127,27 @@ class HuggingFaceDialogueTokenizer:
         template = getattr(self.backend, "chat_template", None)
         return isinstance(template, (str, dict)) and bool(template)
 
-    def _chat_ids(self, messages: list[dict[str, str]], *, generation_prompt: bool) -> list[int]:
+    def _chat_ids(
+        self,
+        messages: list[dict[str, str]],
+        *,
+        generation_prompt: bool,
+    ) -> list[int]:
         result = self.backend.apply_chat_template(
-            messages, tokenize=True, add_generation_prompt=generation_prompt
+            messages,
+            tokenize=True,
+            add_generation_prompt=generation_prompt,
+            return_dict=False,
         )
+
         if not isinstance(result, list) or not all(
-            isinstance(token, int) and not isinstance(token, bool) for token in result
+            isinstance(token, int) and not isinstance(token, bool)
+            for token in result
         ):
-            raise RuntimeError("Chat template tokenizer-а не вернул список token IDs")
+            raise RuntimeError(
+                "Chat template tokenizer-а не вернул список token IDs"
+            )
+
         return cast(list[int], result)
 
     def _encode_chat_window(self, sample: DialogueSample, max_length: int) -> EncodedDialogue:
