@@ -53,6 +53,12 @@ def build_argument_parser() -> argparse.ArgumentParser:
         help="Лимит train samples; 0 — использовать весь train",
     )
     setup.add_argument("--log-interval", type=int, default=100)
+    setup.add_argument(
+        "--max-validation-samples",
+        type=int,
+        default=1000,
+        help="Лимит validation samples; 0 — использовать весь validation split",
+    )
     setup.add_argument("--validation-interval", type=int, default=500)
     setup.add_argument("--validation-batches", type=int, default=50)
     setup.add_argument("--checkpoint-interval", type=int, default=500)
@@ -87,6 +93,9 @@ def _run_setup(args: argparse.Namespace) -> int:
                 batch_size=args.batch_size,
                 num_workers=args.num_workers,
                 max_train_samples=None if args.max_train_samples == 0 else args.max_train_samples,
+                max_validation_samples=(
+                    None if args.max_validation_samples == 0 else args.max_validation_samples
+                ),
                 log_interval=args.log_interval,
                 validation_interval=args.validation_interval,
                 validation_batches=args.validation_batches,

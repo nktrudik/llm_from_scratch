@@ -36,6 +36,11 @@ def build_argument_parser() -> argparse.ArgumentParser:
         help="Лимит пригодных train samples; 0 — весь train; pretrained default: 30000",
     )
     duration = parser.add_mutually_exclusive_group()
+    parser.add_argument(
+        "--max-validation-samples",
+        type=int,
+        help="Лимит пригодных validation samples; 0 — весь split; pretrained default: 1000",
+    )
     duration.add_argument("--epochs", type=int, default=3)
     duration.add_argument("--max-steps", type=int)
     parser.add_argument("--learning-rate", type=float, default=3e-4)
@@ -80,6 +85,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                     defaults.max_train_samples
                     if args.max_train_samples is None
                     else (None if args.max_train_samples == 0 else args.max_train_samples)
+                ),
+                max_validation_samples=(
+                    defaults.max_validation_samples
+                    if args.max_validation_samples is None
+                    else (None if args.max_validation_samples == 0 else args.max_validation_samples)
                 ),
                 epochs=epochs,
                 max_steps=args.max_steps,

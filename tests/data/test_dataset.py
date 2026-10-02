@@ -124,11 +124,16 @@ def test_loss_labels_include_only_response_and_eos(tmp_path: Path) -> None:
     assert item["labels"][-1].item() == tokenizer.token_to_id(EOS_TOKEN)
 
 
-def test_effective_token_fallback_reports_scan_progress(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+def test_missing_effective_token_statistics_does_not_scan_dataset(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     dataset, _ = _prepare_dataset(tmp_path)
     capsys.readouterr()
+
+    def unexpected_access(self: DialogueDataset, index: int) -> None:
+        pytest.fail("effective_train_tokens не должен читать samples Dataset")
+
+    monkeypatch.setattr(DialogueDataset, "__getitem__", unexpected_access)
 
     token_count, source = effective_train_tokens(
         tmp_path / "missing_statistics.json",
@@ -137,15 +142,15 @@ def test_effective_token_fallback_reports_scan_progress(
     )
 
     output = capsys.readouterr().out
-    assert token_count > 0
-    assert source == "расчёт по train Dataset"
-    assert "fallback full Dataset scan" in output
-    assert "processed=3/3" in output
-    assert f"training_loss_tokens={token_count}" in output
+    assert token_count is None
+    assert source == "unknown"
+    assert "effective_train_tokens=unknown" in output
+    assert "Предварительный пересчёт отключён" in output
+    assert "Fallback scan" not in output
 
 
 def test_effective_tokens_reports_statistics_json_source(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     dataset, _ = _prepare_dataset(tmp_path)
     statistics_file = tmp_path / "statistics.json"
@@ -166,6 +171,11 @@ def test_effective_tokens_reports_statistics_json_source(
     )
     capsys.readouterr()
 
+    def unexpected_access(self: DialogueDataset, index: int) -> None:
+        pytest.fail("Готовая статистика не требует чтения samples Dataset")
+
+    monkeypatch.setattr(DialogueDataset, "__getitem__", unexpected_access)
+
     token_count, source = effective_train_tokens(
         statistics_file,
         dataset,
@@ -177,6 +187,38 @@ def test_effective_tokens_reports_statistics_json_source(
     assert source == str(statistics_file)
     assert "прочитаны из statistics JSON" in output
     assert "training_loss_tokens=123" in output
+
+
+@pytest.mark.parametrize("case", ["invalid_json", "window", "objective", "samples", "tokens"])
+def test_incompatible_statistics_do_not_trigger_dataset_scan(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, case: str
+) -> None:
+    dataset, _ = _prepare_dataset(tmp_path)
+    train: dict[str, object] = {"usable_samples": len(dataset), "training_loss_tokens": 123}
+    payload: dict[str, object] = {
+        "max_sequence_length": MAX_LENGTH,
+        "training_objective": "response_only",
+        "splits": {"train": train},
+    }
+    if case == "window":
+        payload["max_sequence_length"] = MAX_LENGTH + 1
+    elif case == "objective":
+        payload["training_objective"] = "all_tokens"
+    elif case == "samples":
+        train["usable_samples"] = len(dataset) + 1
+    elif case == "tokens":
+        train["training_loss_tokens"] = "unknown"
+    path = tmp_path / "statistics.json"
+    path.write_text("{" if case == "invalid_json" else json.dumps(payload), encoding="utf-8")
+
+    def unexpected_access(self: DialogueDataset, index: int) -> None:
+        pytest.fail("Несовместимая статистика не должна запускать scan Dataset")
+
+    monkeypatch.setattr(DialogueDataset, "__getitem__", unexpected_access)
+    assert effective_train_tokens(path, dataset, max_sequence_length=MAX_LENGTH) == (
+        None,
+        "unknown",
+    )
 
 
 def test_dataloader_pads_targets_and_keeps_incomplete_last_batch(tmp_path: Path) -> None:

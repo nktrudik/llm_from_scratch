@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 from mini_llm.ui import client
+from mini_llm.ui import config as ui_config
 from mini_llm.ui.config import ModelBackend, PretrainedMode
 
 if TYPE_CHECKING:
@@ -81,6 +82,21 @@ def test_ui_switches_backend_without_replaying_request(
     assert not app_test.chat_message
 
 
+def test_ui_handles_cached_labels_without_custom_checkpoint(
+    app_test: AppTest, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Воспроизвести старый словарь config, оставшийся после горячего обновления UI."""
+
+    monkeypatch.delitem(ui_config.MODE_LABELS, "custom_checkpoint")
+    app_test.selectbox[0].select("pretrained").run()
+    assert not app_test.exception
+    assert "Свой чекпоинт" in app_test.radio[0].options
+    app_test.radio[0].set_value("custom_checkpoint").run()
+    assert not app_test.exception
+    assert len(app_test.text_input) == 1
+    assert app_test.chat_input[0].disabled
+
+
 def test_ui_qwen_after_sft_is_unselectable_without_best_checkpoint(
     app_test: AppTest, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -97,7 +113,7 @@ def test_ui_qwen_after_sft_is_unselectable_without_best_checkpoint(
     assert app_test.selectbox[0].options == ["Custom", "Qwen"]
     app_test.selectbox[0].select("pretrained").run()
     assert not app_test.exception
-    assert app_test.radio[0].options == ["До SFT — исходная модель"]
+    assert app_test.radio[0].options == ["До SFT — исходная модель", "Свой чекпоинт"]
     assert not app_test.chat_input[0].disabled
 
 
@@ -116,6 +132,40 @@ def test_ui_can_select_after_sft_when_checkpoint_exists(
     app_test.chat_input[0].set_value("Тест").run()
     assert not app_test.exception
     assert calls == ["after_sft"]
+
+
+def test_ui_sends_checkpoint_name_and_requires_nonempty_input(
+    app_test: AppTest, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[tuple[str, ModelBackend, PretrainedMode | None, str | None]] = []
+
+    def generate(
+        prompt: str,
+        backend: ModelBackend,
+        mode: PretrainedMode | None = None,
+        checkpoint_name: str | None = None,
+    ) -> str:
+        calls.append((prompt, backend, mode, checkpoint_name))
+        return "Ответ checkpoint"
+
+    monkeypatch.setattr(client, "generate_reply", generate)
+    app_test.selectbox[0].select("pretrained").run()
+    app_test.radio[0].set_value("custom_checkpoint").run()
+    assert app_test.chat_input[0].disabled
+    assert len(app_test.text_input) == 1
+    app_test.text_input[0].set_value("   ").run()
+    assert app_test.chat_input[0].disabled
+    app_test.text_input[0].set_value(" step_00000500.pt ").run()
+    assert not app_test.chat_input[0].disabled
+    app_test.chat_input[0].set_value("Привет").run()
+    assert not app_test.exception
+    assert calls == [("Привет", "pretrained", "custom_checkpoint", "step_00000500.pt")]
+    app_test.radio[0].set_value("before_sft").run()
+    assert not app_test.text_input
+    assert len(calls) == 1
+    app_test.selectbox[0].select("custom").run()
+    assert not app_test.radio
+    assert not app_test.text_input
 
 
 def test_ui_requires_preparation_for_qwen(

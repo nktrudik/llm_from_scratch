@@ -207,6 +207,7 @@ def test_setup_cli_train_passes_registered_paths_to_existing_trainer(
     assert calls[0].checkpoint_dir == ModelPaths.for_model("owner/model").checkpoint_dir
     assert calls[0].batch_size == 2
     assert calls[0].max_train_samples == 30_000
+    assert calls[0].max_validation_samples == 1000
     assert calls[0].num_workers == 2
     assert calls[0].log_interval == 100
     assert calls[0].validation_interval == 500
@@ -255,6 +256,8 @@ def test_setup_cli_preserves_explicit_fp16_and_full_dataset_option(
                 "--gradient-checkpointing",
                 "--max-train-samples",
                 "0",
+                "--max-validation-samples",
+                "0",
                 "--num-workers",
                 "0",
                 "--batch-size",
@@ -276,6 +279,7 @@ def test_setup_cli_preserves_explicit_fp16_and_full_dataset_option(
     assert config.gradient_checkpointing
     assert config.max_sequence_length == 512
     assert calls[0].max_train_samples is None
+    assert calls[0].max_validation_samples is None
     assert calls[0].batch_size == 1
     assert calls[0].num_workers == 0
     assert calls[0].log_interval == 7

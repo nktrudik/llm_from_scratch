@@ -3,10 +3,15 @@
 from pathlib import Path
 
 import pytest
+from fastapi import HTTPException
 from pydantic import ValidationError
 
+from mini_llm.api import app as api_module
 from mini_llm.api.schemas import GenerationRequest
+from mini_llm.inference.checkpoints import resolve_named_checkpoint
+from mini_llm.inference.config import GenerationConfig
 from mini_llm.inference.options import pretrained_generation_options
+from mini_llm.inference.schemas import GenerationResult
 from mini_llm.pretrained import PretrainedConfig
 from mini_llm.pretrained.workspace import ACTIVE_MODEL_FILE, ModelRegistration
 
@@ -95,3 +100,94 @@ def test_before_sft_rejects_explicit_checkpoint() -> None:
             checkpoint_file=Path("best.pt"),
             pretrained_config_file=Path("config.json"),
         )
+
+
+def test_named_checkpoint_uses_active_directory_and_existing_generation(
+    registered_model: ModelRegistration, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    checkpoint = registered_model.checkpoint_dir / "step_00000500.pt"
+    checkpoint.write_bytes(b"checkpoint marker")
+    calls: list[GenerationConfig] = []
+
+    def generate_response(prompt: str, config: GenerationConfig) -> GenerationResult:
+        calls.append(config)
+        return GenerationResult("Ответ", [1])
+
+    monkeypatch.setattr(api_module, "generate_response", generate_response)
+    response = api_module.generate(
+        GenerationRequest(
+            prompt="Текст",
+            model_backend="pretrained",
+            pretrained_mode="custom_checkpoint",
+            checkpoint_name="step_00000500.pt",
+        )
+    )
+    assert response.text == "Ответ"
+    assert calls[0].checkpoint_file == checkpoint
+    assert calls[0].pretrained_config_file == registered_model.config_file
+    assert calls[0].pretrained_mode == "custom_checkpoint"
+    assert calls[0].tokenizer_file is None
+    assert not pretrained_generation_options().after_sft_available
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        None,
+        "",
+        "../step.pt",
+        "folder/step.pt",
+        "folder\\step.pt",
+        "C:\\step.pt",
+        "step.pt:stream",
+        "model.json",
+    ],
+)
+def test_named_checkpoint_rejects_missing_name_and_paths(
+    registered_model: ModelRegistration, name: str | None
+) -> None:
+    with pytest.raises(ValidationError):
+        GenerationRequest(
+            prompt="Текст",
+            model_backend="pretrained",
+            pretrained_mode="custom_checkpoint",
+            checkpoint_name=name,
+        )
+
+
+@pytest.mark.parametrize("exists", [False, True])
+def test_missing_or_empty_named_checkpoint_fails_before_model_loading(
+    registered_model: ModelRegistration, monkeypatch: pytest.MonkeyPatch, exists: bool
+) -> None:
+    if exists:
+        (registered_model.checkpoint_dir / "step_00000500.pt").touch()
+
+    def unexpected_generation(*args: object, **kwargs: object) -> GenerationResult:
+        pytest.fail("Неверный checkpoint не должен загружать модель")
+
+    monkeypatch.setattr(api_module, "generate_response", unexpected_generation)
+    request = GenerationRequest(
+        prompt="Текст",
+        model_backend="pretrained",
+        pretrained_mode="custom_checkpoint",
+        checkpoint_name="step_00000500.pt",
+    )
+    with pytest.raises(HTTPException, match="не найден или пуст") as error:
+        api_module.generate(request)
+    assert error.value.status_code == 400
+
+
+def test_named_checkpoint_cannot_escape_directory_via_link(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    checkpoint_dir = tmp_path / "checkpoints"
+    original_resolve = Path.resolve
+
+    def resolve(path: Path, strict: bool = False) -> Path:
+        if path.name == "linked.pt":
+            return tmp_path / "outside" / "checkpoint.pt"
+        return original_resolve(path, strict=strict)
+
+    monkeypatch.setattr(Path, "resolve", resolve)
+    with pytest.raises(ValueError, match="внутри каталога"):
+        resolve_named_checkpoint(checkpoint_dir, "linked.pt")

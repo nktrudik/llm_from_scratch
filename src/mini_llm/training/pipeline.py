@@ -78,6 +78,7 @@ def _train_model(active_config: TrainingConfig) -> TrainingResult:
         f"seq_length={model.max_sequence_length} batch_size={active_config.batch_size} "
         f"gradient_checkpointing={gradient_checkpointing} optimizer={optimizer_name(model)} "
         f"max_train_samples={active_config.max_train_samples or 'all'} "
+        f"max_validation_samples={active_config.max_validation_samples or 'all'} "
         f"num_workers={active_config.num_workers}",
     )
     total_parameters = sum(parameter.numel() for parameter in model.module.parameters())
@@ -103,6 +104,7 @@ def _train_model(active_config: TrainingConfig) -> TrainingResult:
             validation_file,
             tokenizer,
             max_sequence_length=model.max_sequence_length,
+            max_samples=active_config.max_validation_samples,
         )
     if len(train_dataset) == 0 or len(validation_dataset) == 0:
         raise RuntimeError("Train и validation Dataset должны содержать пригодные samples")
@@ -118,7 +120,7 @@ def _train_model(active_config: TrainingConfig) -> TrainingResult:
         f"steps_per_epoch={plan.steps_per_epoch} "
         f"planned_total_steps={plan.planned_total_steps} planned_epochs={plan.planned_epochs}",
     )
-    with terminal_stage("TOKENS", "расчёт effective train tokens"):
+    with terminal_stage("TOKENS", "чтение готовой статистики effective train tokens"):
         train_token_count, token_count_source = effective_train_tokens(
             active_config.token_statistics_file,
             train_dataset,
@@ -174,7 +176,8 @@ def _train_model(active_config: TrainingConfig) -> TrainingResult:
         "TRAINING",
         f"Training plan: steps_per_epoch={plan.steps_per_epoch}, "
         f"planned_total_steps={plan.planned_total_steps}, "
-        f"train_samples={len(train_dataset)}, effective_train_tokens={train_token_count} "
+        f"train_samples={len(train_dataset)}, effective_train_tokens="
+        f"{train_token_count if train_token_count is not None else 'unknown'} "
         f"(source={token_count_source})",
     )
     last_validation_step = -1

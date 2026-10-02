@@ -15,12 +15,13 @@ from mini_llm.ui.config import (
 def main() -> None:
     """Показать минимальный чат и отправить текущий запрос в FastAPI."""
 
-    st.set_page_config(page_title="Mini LLM", page_icon="💬", layout="centered")
-    st.title("Mini LLM")
+    st.set_page_config(page_title="НейроДвач", page_icon="💬", layout="centered")
+    st.title("НейроДвач")
     backend: ModelBackend = st.selectbox(
         "Модель", MODEL_BACKENDS, format_func=lambda value: MODEL_LABELS[value]
     )
     mode: PretrainedMode | None = None
+    checkpoint_name: str | None = None
     ready = True
     if backend == "pretrained":
         try:
@@ -30,7 +31,22 @@ def main() -> None:
             modes: list[PretrainedMode] = ["before_sft"]
             if options.after_sft_available:
                 modes.append("after_sft")
-            mode = st.radio("Режим Qwen", modes, format_func=lambda value: MODE_LABELS[value])
+            modes.append("custom_checkpoint")
+            mode = st.radio(
+                "Режим Qwen",
+                modes,
+                # При горячем обновлении Streamlit может сохранить старый словарь подписей.
+                format_func=lambda value: MODE_LABELS.get(
+                    value, "Свой чекпоинт" if value == "custom_checkpoint" else value
+                ),
+            )
+            if mode == "custom_checkpoint":
+                checkpoint_name = st.text_input(
+                    "Имя чекпоинта",
+                    placeholder="step_00000500.pt",
+                    help="Только имя .pt файла. Каталог активной модели выбирает API.",
+                ).strip()
+                ready = ready and bool(checkpoint_name)
             if options.reason:
                 st.caption(options.reason + " Обновите страницу после подготовки/обучения.")
         except GenerationAPIError as error:
@@ -43,11 +59,12 @@ def main() -> None:
         st.markdown(prompt)
     try:
         with st.spinner("Модель готовит ответ…"):
-            reply = (
-                generate_reply(prompt, backend, mode)
-                if backend == "pretrained"
-                else generate_reply(prompt, backend)
-            )
+            if mode == "custom_checkpoint":
+                reply = generate_reply(prompt, backend, mode, checkpoint_name=checkpoint_name)
+            elif backend == "pretrained":
+                reply = generate_reply(prompt, backend, mode)
+            else:
+                reply = generate_reply(prompt, backend)
     except GenerationAPIError as error:
         st.error(str(error))
         return

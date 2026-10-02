@@ -38,6 +38,26 @@ def test_cache_reuses_model_across_requests(cache_files: tuple[Path, Path]) -> N
     assert loads == 1
 
 
+def test_cache_switches_named_checkpoints_and_reuses_current_one(
+    cache_files: tuple[Path, Path],
+) -> None:
+    config, first = cache_files
+    second = first.with_name("step_00000500.pt")
+    second.write_bytes(b"another checkpoint marker")
+    cache = PretrainedModelCache()
+    loads = 0
+
+    def load() -> PreparedPretrained:
+        nonlocal loads
+        loads += 1
+        return cast(PreparedPretrained, object())
+
+    for checkpoint in (first, second, second, first):
+        with cache.use(config, checkpoint, torch.device("cpu"), load):
+            pass
+    assert loads == 3
+
+
 @pytest.mark.parametrize("changed_file", [0, 1])
 def test_cache_invalidates_after_file_update(
     cache_files: tuple[Path, Path], changed_file: int

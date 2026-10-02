@@ -1,5 +1,6 @@
 """HTTP-клиент существующей ручки генерации без локальной загрузки модели."""
 
+from pathlib import Path
 from typing import cast
 
 import requests
@@ -51,13 +52,27 @@ def get_generation_options() -> GenerationOptions:
 
 
 def generate_reply(
-    prompt: str, model_backend: ModelBackend, pretrained_mode: PretrainedMode | None = None
+    prompt: str,
+    model_backend: ModelBackend,
+    pretrained_mode: PretrainedMode | None = None,
+    checkpoint_name: str | None = None,
 ) -> str:
     """Передать prompt, backend и режим Qwen; пути и параметры выбирает API."""
 
     body = {"prompt": prompt, "model_backend": model_backend}
     if model_backend == "pretrained" and pretrained_mode is not None:
         body["pretrained_mode"] = pretrained_mode
+    if pretrained_mode == "custom_checkpoint":
+        if model_backend != "pretrained" or checkpoint_name is None:
+            raise GenerationAPIError("Для режима «Свой чекпоинт» Qwen нужно имя checkpoint")
+        name = checkpoint_name.strip()
+        if not name or any(char in name for char in "/\\:") or Path(name).suffix != ".pt":
+            raise GenerationAPIError(
+                "Укажите только имя .pt файла, например step_00000500.pt, без пути"
+            )
+        body["checkpoint_name"] = name
+    elif checkpoint_name is not None:
+        raise GenerationAPIError("Имя checkpoint допустимо только в режиме «Свой чекпоинт»")
     try:
         with requests.Session() as session:
             response = session.post(

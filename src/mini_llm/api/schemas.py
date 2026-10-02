@@ -11,6 +11,7 @@ from mini_llm.data.config import MAX_BATCH_SIZE
 from mini_llm.data.preprocessing import PreprocessingConfig
 from mini_llm.data.scraping import ScraperConfig
 from mini_llm.inference import GenerationConfig
+from mini_llm.inference.checkpoints import resolve_named_checkpoint, validate_checkpoint_name
 from mini_llm.inference.config import (
     DEFAULT_CUSTOM_CHECKPOINT_PATH,
     DEFAULT_PRETRAINED_CHECKPOINT_PATH,
@@ -71,6 +72,7 @@ class TrainingRequest(BaseModel):
     device: str = "cuda"
     mixed_precision: bool = True
     max_train_samples: int | None = Field(default=None, ge=1)
+    max_validation_samples: int | None = Field(default=None, ge=1)
 
     @model_validator(mode="after")
     def validate_duration(self) -> Self:
@@ -88,6 +90,7 @@ class TrainingRequest(BaseModel):
                 "batch_size",
                 "num_workers",
                 "max_train_samples",
+                "max_validation_samples",
                 "log_interval",
                 "validation_interval",
                 "validation_batches",
@@ -214,6 +217,10 @@ class GenerationRequest(BaseModel):
     tokenizer_file: Path | None = Field(default_factory=lambda: DEFAULT_TOKENIZER_PATH)
     pretrained_config_file: Path | None = None
     pretrained_mode: PretrainedGenerationMode | None = None
+    checkpoint_name: str | None = Field(
+        default=None,
+        description="Имя .pt файла в каталоге активной модели для custom_checkpoint",
+    )
     device: str = "cuda"
     max_new_tokens: int = Field(default=256, ge=0)
     temperature: float = Field(default=0.3, gt=0)
@@ -239,6 +246,12 @@ class GenerationRequest(BaseModel):
                     "temperature": 0.3,
                     "top_k": 20,
                 },
+                {
+                    "model_backend": "pretrained",
+                    "prompt": "Привет! Как у тебя дела?",
+                    "pretrained_mode": "custom_checkpoint",
+                    "checkpoint_name": "step_00000500.pt",
+                },
             ]
         }
     )
@@ -247,6 +260,19 @@ class GenerationRequest(BaseModel):
     def validate_backend_files(self) -> Self:
         """Подставить defaults выбранного backend и проверить обязательные файлы."""
 
+        if self.checkpoint_name is not None:
+            if self.model_backend != "pretrained" or self.pretrained_mode != "custom_checkpoint":
+                raise ValueError("checkpoint_name допустим только в режиме custom_checkpoint Qwen")
+            self.checkpoint_name = validate_checkpoint_name(self.checkpoint_name)
+        if self.pretrained_mode == "custom_checkpoint":
+            if self.model_backend != "pretrained" or self.checkpoint_name is None:
+                raise ValueError("Для custom_checkpoint Qwen нужен checkpoint_name")
+            if "checkpoint_file" in self.model_fields_set:
+                raise ValueError(
+                    "В custom_checkpoint передавайте checkpoint_name, не checkpoint_file"
+                )
+            if "pretrained_config_file" in self.model_fields_set:
+                raise ValueError("В custom_checkpoint конфиг определяется активной моделью")
         if self.model_backend == "pretrained":
             # Явно переданные пути сохраняются; defaults выбирает API, а не UI.
             explicit_checkpoint = "checkpoint_file" in self.model_fields_set
@@ -271,6 +297,13 @@ class GenerationRequest(BaseModel):
                     if self.pretrained_mode == "after_sft"
                     else None
                 )
+                if self.pretrained_mode == "custom_checkpoint" and self.checkpoint_name is not None:
+                    checkpoint_dir = (
+                        registration.checkpoint_dir
+                        if registration
+                        else DEFAULT_PRETRAINED_CHECKPOINT_PATH.parent
+                    )
+                    self.checkpoint_file = checkpoint_dir / self.checkpoint_name
             if "pretrained_config_file" not in self.model_fields_set:
                 self.pretrained_config_file = (
                     registration.config_file if registration else DEFAULT_PRETRAINED_CONFIG_PATH
@@ -286,8 +319,11 @@ class GenerationRequest(BaseModel):
         if self.model_backend == "custom" and self.pretrained_mode is not None:
             raise ValueError("pretrained_mode допустим только для pretrained backend")
         if self.model_backend == "pretrained":
-            if self.pretrained_mode == "after_sft" and self.checkpoint_file is None:
-                raise ValueError("Для режима after_sft нужен checkpoint_file")
+            if (
+                self.pretrained_mode in {"after_sft", "custom_checkpoint"}
+                and self.checkpoint_file is None
+            ):
+                raise ValueError(f"Для режима {self.pretrained_mode} нужен checkpoint_file")
             if self.pretrained_mode == "before_sft" and self.checkpoint_file is not None:
                 raise ValueError("Режим before_sft не использует checkpoint_file")
         return self
@@ -295,7 +331,13 @@ class GenerationRequest(BaseModel):
     def to_config(self) -> GenerationConfig:
         """Преобразовать параметры запроса во внутреннюю конфигурацию генерации."""
 
-        values = self.model_dump(exclude={"prompt"})
+        values = self.model_dump(exclude={"prompt", "checkpoint_name"})
+        if self.pretrained_mode == "custom_checkpoint":
+            if self.checkpoint_file is None or self.checkpoint_name is None:
+                raise ValueError("Для custom_checkpoint нужен checkpoint_name")
+            values["checkpoint_file"] = resolve_named_checkpoint(
+                self.checkpoint_file.parent, self.checkpoint_name
+            )
         if values["pretrained_mode"] is None:
             values.pop("pretrained_mode")
         return GenerationConfig(**values)

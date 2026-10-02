@@ -131,9 +131,16 @@ Invoke-RestMethod -Method Get -Uri "http://127.0.0.1:8000/v1/jobs/JOB_ID"
 Один экран: выбор `Custom` (`custom`) или `Qwen` (`pretrained`),
 поле сообщения и ответ. Сохраняется только отображение текущей пары: следующий запрос заменяет
 предыдущую пару. Истории, памяти диалога и списка чатов нет. Только для Qwen есть выбор:
-«До SFT — исходная модель» или «После SFT — best checkpoint».
+«До SFT — исходная модель», «После SFT — best checkpoint» или «Свой чекпоинт».
 Второй вариант отсутствует, пока у активной модели нет непустого `best.pt`; наличие periodic
 checkpoint или `last.pt` его не включает. После обучения обновите страницу.
+В режиме «Свой чекпоинт» введите только имя файла, например `step_00000500.pt`;
+поле появляется только для этого режима, до заполнения отправка сообщения заблокирована.
+API подставляет каталог checkpoints из активной регистрации. Сейчас это
+`checkpoints/pretrained/model--qwen--qwen2.5-0.5b-instruct/qlora/`.
+Можно использовать periodic checkpoint или `last.pt`, даже если `best.pt` ещё нет.
+Внешние пути и выход из каталога запрещены; отсутствующий или пустой файл выдаёт понятную
+ошибку до загрузки модели. Проверка совместимости checkpoint с конфигом остаётся прежней.
 UI проверяет доступность через `GET /v1/generate/options`, не читает файлы модели самостоятельно.
 До выполнения setup ввод для Qwen заблокирован, но Custom остаётся доступен.
 
@@ -169,6 +176,7 @@ API на CUDA по существующим defaults. Для Custom нужны c
 для Qwen сначала выполните setup из раздела pretrained ниже. До SFT checkpoint не требуется.
 
 UI отправляет в `POST /v1/generate` только `prompt`, `model_backend` и, для Qwen, `pretrained_mode`.
+Для режима `custom_checkpoint` дополнительно отправляется `checkpoint_name`, без полного пути.
 Сервер подставляет пути:
 
 | Backend | Checkpoint | Tokenizer / конфиг |
@@ -176,6 +184,7 @@ UI отправляет в `POST /v1/generate` только `prompt`, `model_bac
 | `custom` | `checkpoints/training/best.pt` | `artifacts/tokenizer/2ch_bpe.json` |
 | `pretrained`, до SFT | не используется | конфиг из `artifacts/pretrained/active.json` |
 | `pretrained`, после SFT | `best.pt` из каталога активной модели | тот же конфиг |
+| `pretrained`, свой checkpoint | файл по `checkpoint_name` в том же каталоге | тот же конфиг |
 
 Pretrained tokenizer выбирается из `model_id/revision/cache_dir` в конфиге, а не из BPE-файла.
 Загрузка до SFT не создаёт случайный LoRA-адаптер: используются исходные instruct-веса в
@@ -468,7 +477,7 @@ Pretrained использует свой tokenizer: обучать BPE и пов
 Стартовый профиль для RTX 3050 Laptop 4 GB — QLoRA и batch size 2:
 
 ```powershell
-.\.venv\Scripts\python.exe -m mini_llm.pretrained setup "Qwen/Qwen2.5-0.5B-Instruct" --train --dtype bfloat16 --max-sequence-length 512 --no-gradient-checkpointing --batch-size 2 --max-train-samples 30000 --num-workers 2 --log-interval 100 --validation-interval 500 --validation-batches 50 --checkpoint-interval 500 --epochs 3 --learning-rate 0.0002
+.\.venv\Scripts\python.exe -m mini_llm.pretrained setup "Qwen/Qwen2.5-0.5B-Instruct" --train --dtype bfloat16 --max-sequence-length 512 --no-gradient-checkpointing --batch-size 2 --max-train-samples 30000 --max-validation-samples 1000 --num-workers 2 --log-interval 100 --validation-interval 500 --validation-batches 50 --checkpoint-interval 500 --epochs 3 --learning-rate 0.0002
 ```
 
 Только флаг `--train` запускает существующий trainer после setup. Training читает split JSONL,
@@ -479,7 +488,8 @@ VRAM зависит от модели и длины samples: QLoRA не гара
 
 Профиль `PretrainedTrainingConfig` используется CLI и HTTP API для pretrained backend:
 batch size 2, `num_workers=2`, максимум 30 000 пригодных train samples, log interval 100,
-validation interval 500, до 50 validation batches, checkpoint interval 500. Явные параметры
+максимум 1000 пригодных validation samples, validation interval 500,
+до 50 validation batches, checkpoint interval 500. Явные параметры
 имеют приоритет. Custom backend сохраняет прежние defaults и обычный `torch.optim.AdamW`.
 
 QLoRA использует [bitsandbytes AdamW8bit](https://huggingface.co/docs/bitsandbytes/reference/optim/adamw),
@@ -491,16 +501,23 @@ GradScaler выключен для BF16 и сохраняется для FP16. �
 явно выберите `--dtype float16` при setup либо `torch_dtype: "float16"` в отдельном конфиге.
 `auto` при обучении явно разрешается в BF16; full с float32-весами использует BF16 AMP.
 
-Лимит применяется только к первым пригодным samples train в порядке JSONL, перед shuffle.
-Исходные JSONL не меняются; validation Dataset индексируется целиком, независимо от лимита
-train. `validation_batches=50` ограничивает только число batches одного validation прохода.
-`--max-train-samples 0` использует весь train; в программном API и HTTP вместо 0 задайте
-`max_train_samples=None` / JSON `null`. Effective train tokens и план эпох рассчитываются
-по фактически выбранному train Dataset. Если статистика всего корпуса не подходит, выполняется
-сканирование только выбранных samples.
+Лимиты train и validation независимы и выбирают первые пригодные samples соответствующего JSONL;
+исходные файлы не меняются. Train затем перемешивается, validation остаётся в порядке файла.
+Индексация validation прекращается после 1000 пригодных samples по умолчанию для pretrained.
+`validation_batches=50` отдельно ограничивает число batches одного validation прохода.
+`--max-train-samples 0` использует весь train, `--max-validation-samples 0` — весь validation.
+В программном API и HTTP для снятия лимита задайте соответствующее поле `None` / JSON `null`.
+Custom по умолчанию не ограничивает ни train, ни validation.
+
+План эпох рассчитывается по фактически выбранному train Dataset. Effective train tokens
+читаются только из совместимого statistics JSON: должны совпадать длина окна, objective
+`response_only` и число пригодных train samples. Если файл отсутствует, повреждён или несовместим,
+выводится `effective_train_tokens=unknown`, без дополнительного прохода по train Dataset.
+Обычная индексация Dataset остаётся необходимой; убран именно повторный scan токенов перед
+обучением. Во время обучения `tokens_seen`, loss и tokens/sec считаются по batches как раньше.
 
 Перед загрузкой модели и обучением выводятся dtype, seq length, batch size,
-gradient checkpointing, optimizer, max train samples и num workers. При CUDA OOM запуск
+gradient checkpointing, optimizer, max train/validation samples и num workers. При CUDA OOM запуск
 завершается с понятной ошибкой; batch size, окно и precision автоматически не меняются.
 Фактическое размещение профиля в 4 GB следует проверить своим запуском: автоматических GPU
 benchmark или обучения проект при изменении кода не запускает.
@@ -508,7 +525,7 @@ benchmark или обучения проект при изменении код�
 Если модель уже скачана, можно отдельно запустить trainer с дополнительными настройками:
 
 ```powershell
-.\.venv\Scripts\python.exe -m mini_llm.training --backend pretrained --pretrained-config configs/pretrained/model--qwen--qwen2.5-0.5b-instruct-qlora.json --checkpoint-dir checkpoints/pretrained/model--qwen--qwen2.5-0.5b-instruct/qlora --device cuda --batch-size 2 --epochs 3 --learning-rate 0.0002 --max-train-samples 30000 --num-workers 2 --log-interval 100 --validation-interval 500 --validation-batches 50 --checkpoint-interval 500
+.\.venv\Scripts\python.exe -m mini_llm.training --backend pretrained --pretrained-config configs/pretrained/model--qwen--qwen2.5-0.5b-instruct-qlora.json --checkpoint-dir checkpoints/pretrained/model--qwen--qwen2.5-0.5b-instruct/qlora --device cuda --batch-size 2 --epochs 3 --learning-rate 0.0002 --max-train-samples 30000 --max-validation-samples 1000 --num-workers 2 --log-interval 100 --validation-interval 500 --validation-batches 50 --checkpoint-interval 500
 ```
 
 Для обычного LoRA и full fine-tuning:
@@ -524,7 +541,7 @@ LoRA требует больше VRAM, чем QLoRA. Full fine-tuning 0.5B-мо�
 Продолжение QLoRA из `last.pt` до общего целевого числа шести эпох, без обращения к Hub:
 
 ```powershell
-.\.venv\Scripts\python.exe -m mini_llm.training --backend pretrained --pretrained-config configs/pretrained/model--qwen--qwen2.5-0.5b-instruct-qlora.json --checkpoint-dir checkpoints/pretrained/model--qwen--qwen2.5-0.5b-instruct/qlora --resume-from checkpoints/pretrained/model--qwen--qwen2.5-0.5b-instruct/qlora/last.pt --batch-size 2 --epochs 6 --learning-rate 0.0002 --max-train-samples 30000 --num-workers 2 --log-interval 100 --validation-interval 500 --validation-batches 50 --checkpoint-interval 500
+.\.venv\Scripts\python.exe -m mini_llm.training --backend pretrained --pretrained-config configs/pretrained/model--qwen--qwen2.5-0.5b-instruct-qlora.json --checkpoint-dir checkpoints/pretrained/model--qwen--qwen2.5-0.5b-instruct/qlora --resume-from checkpoints/pretrained/model--qwen--qwen2.5-0.5b-instruct/qlora/last.pt --batch-size 2 --epochs 6 --learning-rate 0.0002 --max-train-samples 30000 --max-validation-samples 1000 --num-workers 2 --log-interval 100 --validation-interval 500 --validation-batches 50 --checkpoint-interval 500
 ```
 
 Для resume из лучшего checkpoint замените `last.pt` на `best.pt`. Исходная команда `pretrained
@@ -537,6 +554,10 @@ Resume отклоняется, если конфигурация модели о
 
 Для точного resume также должны совпадать batch size, optimizer и `max_train_samples`.
 Новые checkpoints сохраняют тип optimizer и лимит train вместе с прежними состояниями.
+Лимит validation сохраняется в `training_config.max_validation_samples`; старые checkpoints
+без этого поля остаются совместимыми. Он не меняет позицию train эпохи при resume.
+Для сопоставимости best validation loss сохраняйте прежний лимит validation; его изменение
+не сбрасывает автоматически сохранённый best loss.
 Старые custom checkpoints без этих полей продолжают загружаться как AdamW / весь train.
 Старый QLoRA checkpoint с FP16, окном 1024 и AdamW нельзя продолжить новым профилем:
 для него сохраните исходный конфиг и окружение; новый профиль запускайте с нуля в отдельном
@@ -557,7 +578,7 @@ rolling average loss по последним 100 шагам.
 
 Terminal output использует timestamp и категории `DEVICE`, `MODEL`, `PRETRAINED`, `PARAMS`, `DATASET`,
 `TOKENS`, `DATALOADER`, `OPTIMIZER`, `TRAIN`, `VALIDATION` и `CHECKPOINT`. Долгая индексация JSONL,
-fallback-пересчёт response tokens и validation периодически показывают процент, elapsed time и
+validation периодически показывают процент, elapsed time и
 скорость. Сохранение каждого checkpoint явно сообщает начало, путь и длительность записи.
 
 Training objective — только assistant response. `input_ids` содержат BOS, последние сообщения
@@ -630,9 +651,8 @@ Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:8000/v1/training" -Content
 Число эпох при resume — общий целевой номер, а не число дополнительных эпох. Learning rate из
 запроса заменяет сохранённый learning rate optimizer. AMP включён по умолчанию; поле
 `mixed_precision = false` оставлено для диагностики, но на GPU с 4 GB обычно не рекомендуется.
-Если актуального
-`token_statistics.json` нет, trainer один раз считает effective train tokens через Dataset перед
-стартом обучения. Отдельный `training_from_best` сохраняет исходную ветку checkpoints без
+Если совместимого `token_statistics.json` нет, число effective train tokens остаётся неизвестным:
+trainer не пересчитывает его перед стартом обучения. Отдельный `training_from_best` сохраняет исходную ветку checkpoints без
 перезаписи.
 
 ## Генерация ответа через API

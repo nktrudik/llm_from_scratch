@@ -131,3 +131,36 @@ def test_client_reads_availability_from_api(monkeypatch: pytest.MonkeyPatch) -> 
     assert options.model_id == "org/instruct"
     assert options.before_sft_available
     assert not options.after_sft_available
+
+
+def test_client_sends_only_checkpoint_name_without_paths(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[object] = []
+
+    def post(*args: object, **kwargs: object) -> requests.Response:
+        calls.append(kwargs["json"])
+        return make_response({"text": "Ответ", "token_ids": [1]})
+
+    monkeypatch.setattr(requests.Session, "post", post)
+    assert (
+        generate_reply("Текст", "pretrained", "custom_checkpoint", " step_00000500.pt ") == "Ответ"
+    )
+    assert calls == [
+        {
+            "prompt": "Текст",
+            "model_backend": "pretrained",
+            "pretrained_mode": "custom_checkpoint",
+            "checkpoint_name": "step_00000500.pt",
+        }
+    ]
+
+
+@pytest.mark.parametrize("name", [None, "", "../step.pt", "folder\\step.pt", "model.json"])
+def test_client_rejects_invalid_checkpoint_without_sending_request(
+    monkeypatch: pytest.MonkeyPatch, name: str | None
+) -> None:
+    def unexpected_request(*args: object, **kwargs: object) -> requests.Response:
+        pytest.fail("Неверное имя checkpoint не должно отправляться в API")
+
+    monkeypatch.setattr(requests.Session, "post", unexpected_request)
+    with pytest.raises(GenerationAPIError):
+        generate_reply("Текст", "pretrained", "custom_checkpoint", name)

@@ -14,7 +14,7 @@ DEFAULT_PRETRAINED_CHECKPOINT_PATH = (
     ModelPaths.for_model(DEFAULT_MODEL_ID).checkpoint_dir / "best.pt"
 )
 DEFAULT_PRETRAINED_CONFIG_PATH = ModelPaths.for_model(DEFAULT_MODEL_ID).config_file
-PretrainedGenerationMode = Literal["before_sft", "after_sft"]
+PretrainedGenerationMode = Literal["before_sft", "after_sft", "custom_checkpoint"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -24,7 +24,7 @@ class GenerationConfig:
     checkpoint_file: Path | None = DEFAULT_CUSTOM_CHECKPOINT_PATH
     tokenizer_file: Path | None = DEFAULT_TOKENIZER_PATH
     device: str = "cuda"
-    max_new_tokens: int = 128
+    max_new_tokens: int = 512
     temperature: float = 0.8
     top_k: int | None = 50
     model_backend: Literal["custom", "pretrained"] = "custom"
@@ -39,8 +39,11 @@ class GenerationConfig:
         if self.model_backend == "pretrained" and self.pretrained_config_file is None:
             raise ValueError("Для pretrained backend нужен pretrained_config_file")
         if self.model_backend == "pretrained":
-            if self.pretrained_mode == "after_sft" and self.checkpoint_file is None:
-                raise ValueError("Для режима after_sft нужен checkpoint_file")
+            if (
+                self.pretrained_mode in {"after_sft", "custom_checkpoint"}
+                and self.checkpoint_file is None
+            ):
+                raise ValueError(f"Для режима {self.pretrained_mode} нужен checkpoint_file")
             if self.pretrained_mode == "before_sft" and self.checkpoint_file is not None:
                 raise ValueError("Режим before_sft не использует checkpoint_file")
         if self.max_new_tokens < 0:

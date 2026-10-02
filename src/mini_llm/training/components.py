@@ -46,6 +46,7 @@ def create_training_components(
             f"gradient_checkpointing={pretrained_config.gradient_checkpointing} "
             f"optimizer={'AdamW8bit' if pretrained_config.adaptation_mode == 'qlora' else 'AdamW'} "
             f"max_train_samples={config.max_train_samples or 'all'} "
+            f"max_validation_samples={config.max_validation_samples or 'all'} "
             f"num_workers={config.num_workers}",
         )
         validate_pretrained_training_device(

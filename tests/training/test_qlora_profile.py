@@ -57,10 +57,12 @@ def test_pretrained_profile_and_explicit_overrides() -> None:
     config = PretrainedTrainingConfig(pretrained_config_file=Path("model.json"))
     assert config.batch_size == config.num_workers == 2
     assert config.max_train_samples == 30_000
+    assert config.max_validation_samples == 1000
     assert config.validation_interval == config.checkpoint_interval == 500
     assert config.validation_batches == 50
     assert config.log_interval == 100
     assert TrainingConfig().max_train_samples is None
+    assert TrainingConfig().max_validation_samples is None
     assert (
         PretrainedTrainingConfig(
             pretrained_config_file=Path("model.json"), max_train_samples=None
@@ -69,6 +71,8 @@ def test_pretrained_profile_and_explicit_overrides() -> None:
     )
     with pytest.raises(ValueError, match="max_train_samples"):
         TrainingConfig(max_train_samples=0)
+    with pytest.raises(ValueError, match="max_validation_samples"):
+        TrainingConfig(max_validation_samples=0)
 
 
 @pytest.mark.parametrize("limit", [None, 0, 17])
@@ -84,11 +88,12 @@ def test_training_cli_uses_backend_defaults_and_full_dataset_flag(
     monkeypatch.setattr(cli, "train_model", fake_train)
     args = ["--backend", "pretrained", "--pretrained-config", "model.json"]
     if limit is not None:
-        args += ["--max-train-samples", str(limit)]
+        args += ["--max-train-samples", str(limit), "--max-validation-samples", str(limit)]
     assert cli.main(args) == 0
     assert calls[0].batch_size == 2
     assert calls[0].num_workers == 2
     assert calls[0].max_train_samples == (30_000 if limit is None else limit or None)
+    assert calls[0].max_validation_samples == (1000 if limit is None else limit or None)
     assert calls[0].validation_interval == 500
     assert calls[0].validation_batches == 50
 
@@ -97,15 +102,18 @@ def test_api_uses_pretrained_profile_without_changing_custom_defaults() -> None:
     config = TrainingRequest(model_backend="pretrained", pretrained_config_file=Path("model.json"))
     assert config.to_config().batch_size == 2
     assert config.to_config().max_train_samples == 30_000
+    assert config.to_config().max_validation_samples == 1000
     assert TrainingRequest().to_config().batch_size == TrainingConfig().batch_size
     full = TrainingRequest(
         model_backend="pretrained",
         pretrained_config_file=Path("model.json"),
         max_train_samples=None,
+        max_validation_samples=None,
         num_workers=0,
         batch_size=1,
     )
     assert full.to_config().max_train_samples is None
+    assert full.to_config().max_validation_samples is None
     assert full.to_config().num_workers == 0
     assert full.to_config().batch_size == 1
     model_config = PretrainedPrepareRequest(
@@ -196,8 +204,12 @@ def test_optimizer_is_8bit_only_for_qlora(
     assert type(create_optimizer(custom, config)) is AdamW
 
 
-def test_train_limit_leaves_validation_and_jsonl_unchanged(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+@pytest.mark.parametrize("validation_limit", [None, 2])
+def test_dataset_limits_are_independent_and_leave_jsonl_unchanged(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    validation_limit: int | None,
 ) -> None:
     payload = {
         "board": "b",
@@ -220,6 +232,7 @@ def test_train_limit_leaves_validation_and_jsonl_unchanged(
         token_statistics_file=tmp_path / "missing.json",
         batch_size=2,
         max_train_samples=3,
+        max_validation_samples=validation_limit,
         epochs=1,
         device="cpu",
         log_interval=1,
@@ -227,10 +240,10 @@ def test_train_limit_leaves_validation_and_jsonl_unchanged(
     result = pipeline.train_model(config)
     output = capsys.readouterr().out
     assert result.global_step == 2
-    assert "train_samples=3, validation_samples=5" in output
-    assert "max_train_samples=3 num_workers=0" in output
+    assert f"train_samples=3, validation_samples={validation_limit or 5}" in output
+    assert f"max_validation_samples={validation_limit or 'all'} num_workers=0" in output
     assert "seq_length=512 batch_size=2" in output
-    assert "effective_train_tokens=6" in output
+    assert "effective_train_tokens=unknown" in output
     for split in ("train", "validation"):
         assert (tmp_path / f"{split}.jsonl").read_text(encoding="utf-8") == text
     resumed = pipeline.train_model(
@@ -241,6 +254,7 @@ def test_train_limit_leaves_validation_and_jsonl_unchanged(
             token_statistics_file=tmp_path / "missing.json",
             batch_size=2,
             max_train_samples=3,
+            max_validation_samples=validation_limit,
             epochs=2,
             device="cpu",
         )
@@ -248,6 +262,9 @@ def test_train_limit_leaves_validation_and_jsonl_unchanged(
     assert resumed.global_step == 4
     state = cast(dict[str, object], torch.load(resumed.last_checkpoint, weights_only=True))
     assert state["samples_seen"] == 6
+    assert state["tokens_seen"] == 12
+    saved_config = cast(dict[str, object], state["training_config"])
+    assert saved_config["max_validation_samples"] == validation_limit
 
 
 @pytest.mark.parametrize("changed", ["limit", "optimizer"])

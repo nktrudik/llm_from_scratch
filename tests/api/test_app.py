@@ -77,10 +77,16 @@ def test_generation_swagger_has_separate_backend_examples() -> None:
     schema = GenerationRequest.model_json_schema()
     examples = cast(list[dict[str, object]], schema["examples"])
 
-    assert [example["model_backend"] for example in examples] == ["custom", "pretrained"]
+    assert [example["model_backend"] for example in examples] == [
+        "custom",
+        "pretrained",
+        "pretrained",
+    ]
     assert "tokenizer_file" in examples[0]
     assert "tokenizer_file" not in examples[1]
     assert "pretrained_config_file" in examples[1]
+    assert examples[2]["pretrained_mode"] == "custom_checkpoint"
+    assert examples[2]["checkpoint_name"] == "step_00000500.pt"
 
 
 def test_generation_defaults_depend_on_backend() -> None:

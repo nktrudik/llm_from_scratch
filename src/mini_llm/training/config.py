@@ -37,6 +37,7 @@ class TrainingConfig:
     device: str = "cuda"
     mixed_precision: bool = True
     max_train_samples: int | None = None
+    max_validation_samples: int | None = None
 
     def __post_init__(self) -> None:
         if self.model_backend == "pretrained" and self.pretrained_config_file is None:
@@ -69,6 +70,10 @@ class TrainingConfig:
             raise ValueError("gradient_clip_norm должен быть положительным")
         if self.max_train_samples is not None and self.max_train_samples <= 0:
             raise ValueError("max_train_samples должен быть положительным или None (весь train)")
+        if self.max_validation_samples is not None and self.max_validation_samples <= 0:
+            raise ValueError(
+                "max_validation_samples должен быть положительным или None (весь validation)"
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -79,6 +84,7 @@ class PretrainedTrainingConfig(TrainingConfig):
     batch_size: int = 2
     num_workers: int = 2
     max_train_samples: int | None = 30_000
+    max_validation_samples: int | None = 1000
     log_interval: int = 100
     validation_interval: int = 500
     validation_batches: int = 50
