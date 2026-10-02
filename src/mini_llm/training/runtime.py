@@ -32,6 +32,7 @@ def training_config_payload(config: TrainingConfig) -> dict[str, object]:
     return {
         "batch_size": config.batch_size,
         "num_workers": config.num_workers,
+        "max_train_samples": config.max_train_samples,
         "epochs": config.epochs,
         "max_steps": config.max_steps,
         "learning_rate": config.learning_rate,

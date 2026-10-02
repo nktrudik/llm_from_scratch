@@ -30,9 +30,15 @@ class ChatTokenizer:
         return "".join(chr(token - 100) for token in tokens if token >= 100)
 
     def apply_chat_template(
-        self, messages: list[dict[str, str]], *, tokenize: bool, add_generation_prompt: bool
+        self,
+        messages: list[dict[str, str]],
+        *,
+        tokenize: bool,
+        add_generation_prompt: bool,
+        return_dict: bool,
     ) -> list[int]:
         assert tokenize
+        assert not return_dict
         tokens: list[int] = []
         for message in messages:
             tokens.append(11 if message["role"] == "user" else 12)

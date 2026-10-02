@@ -21,7 +21,7 @@ class PretrainedConfig(BaseModel):
     cache_dir: Path = Path(".cache/huggingface")
     adaptation_mode: AdaptationMode = "full"
     torch_dtype: TorchDType = "auto"
-    max_sequence_length: int = Field(default=1024, ge=2)
+    max_sequence_length: int = Field(default=512, ge=2)
     local_files_only: bool = False
     trust_remote_code: bool = False
     gradient_checkpointing: bool = True
@@ -32,6 +32,15 @@ class PretrainedConfig(BaseModel):
     qlora_quant_type: Literal["nf4", "fp4"] = "nf4"
     qlora_double_quant: bool = True
     device_map: str | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def apply_qlora_defaults(cls, value: object) -> object:
+        """Подставить профиль QLoRA, сохранив явно заданные старые параметры."""
+
+        if isinstance(value, dict) and value.get("adaptation_mode") == "qlora":
+            return {"torch_dtype": "bfloat16", "gradient_checkpointing": False, **value}
+        return value
 
     @model_validator(mode="after")
     def validate_mode(self) -> Self:

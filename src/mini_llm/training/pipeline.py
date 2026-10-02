@@ -5,7 +5,6 @@ from __future__ import annotations
 import time
 
 import torch
-from torch.optim import AdamW
 
 from mini_llm.data.dataset import IGNORE_INDEX, DataLoaderConfig, DialogueDataset, create_dataloader
 from mini_llm.observability import ProgressThrottle, terminal_log, terminal_stage
@@ -13,6 +12,8 @@ from mini_llm.training.checkpoints import load_checkpoint
 from mini_llm.training.components import create_training_components
 from mini_llm.training.config import TrainingConfig
 from mini_llm.training.monitoring import evaluate_validation_loss, gpu_telemetry
+from mini_llm.training.optimizers import create_optimizer, optimizer_name
+from mini_llm.training.precision import create_grad_scaler
 from mini_llm.training.progress import (
     calculate_training_plan,
     effective_train_tokens,
@@ -26,8 +27,23 @@ from mini_llm.training.schemas import TrainingResult, TrainingState
 def train_model(config: TrainingConfig | None = None) -> TrainingResult:
     """Запустить обучение, validation и checkpointing на одном устройстве."""
 
-    training_started_at = time.perf_counter()
     active_config = config or TrainingConfig()
+    try:
+        return _train_model(active_config)
+    except torch.cuda.OutOfMemoryError as error:
+        message = (
+            f"CUDA OOM: недостаточно VRAM при batch_size={active_config.batch_size}. "
+            "Фактические dtype, seq_length и gradient_checkpointing указаны в логе PARAMS. "
+            "Обучение остановлено; параметры не изменены, автоматический fallback отключён."
+        )
+        terminal_log("TRAINING", message)
+        raise RuntimeError(message) from error
+
+
+def _train_model(active_config: TrainingConfig) -> TrainingResult:
+    """Выполнить последовательный pipeline с неизменяемыми параметрами запуска."""
+
+    training_started_at = time.perf_counter()
     terminal_log(
         "TRAINING",
         f"Pipeline запущен backend={active_config.model_backend} "
@@ -50,6 +66,20 @@ def train_model(config: TrainingConfig | None = None) -> TrainingResult:
         components = create_training_components(active_config, device)
     tokenizer = components.tokenizer
     model = components.model
+    pretrained_metadata = model.checkpoint_metadata.get("pretrained_config")
+    gradient_checkpointing = (
+        pretrained_metadata.get("gradient_checkpointing")
+        if isinstance(pretrained_metadata, dict)
+        else False
+    )
+    terminal_log(
+        "PARAMS",
+        f"dtype={model.autocast_dtype} AMP={use_amp} "
+        f"seq_length={model.max_sequence_length} batch_size={active_config.batch_size} "
+        f"gradient_checkpointing={gradient_checkpointing} optimizer={optimizer_name(model)} "
+        f"max_train_samples={active_config.max_train_samples or 'all'} "
+        f"num_workers={active_config.num_workers}",
+    )
     total_parameters = sum(parameter.numel() for parameter in model.module.parameters())
     trainable_parameters = sum(
         parameter.numel() for parameter in model.module.parameters() if parameter.requires_grad
@@ -65,6 +95,7 @@ def train_model(config: TrainingConfig | None = None) -> TrainingResult:
             train_file,
             tokenizer,
             max_sequence_length=model.max_sequence_length,
+            max_samples=active_config.max_train_samples,
         )
     validation_file = active_config.splits_dir / "validation.jsonl"
     with terminal_stage("DATASET", f"создание validation Dataset file={validation_file}"):
@@ -102,13 +133,9 @@ def train_model(config: TrainingConfig | None = None) -> TrainingResult:
     )
     with terminal_stage("DATALOADER", "создание validation DataLoader"):
         validation_loader = create_dataloader(validation_dataset, loader_config, shuffle=False)
-    with terminal_stage("OPTIMIZER", "создание AdamW и AMP GradScaler"):
-        optimizer = AdamW(
-            model.trainable_parameters(),
-            lr=active_config.learning_rate,
-            weight_decay=active_config.weight_decay,
-        )
-        scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
+    with terminal_stage("OPTIMIZER", f"создание {optimizer_name(model)} и AMP GradScaler"):
+        optimizer = create_optimizer(model, active_config)
+        scaler = create_grad_scaler(use_amp=use_amp, amp_dtype=model.autocast_dtype)
     state = TrainingState()
     if active_config.resume_from is not None:
         with terminal_stage(
@@ -121,6 +148,7 @@ def train_model(config: TrainingConfig | None = None) -> TrainingResult:
                 scaler=scaler,
                 learning_rate=active_config.learning_rate,
                 expected_batch_size=active_config.batch_size,
+                expected_max_train_samples=active_config.max_train_samples,
             )
         terminal_log(
             "CHECKPOINT",

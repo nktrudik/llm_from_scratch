@@ -50,6 +50,7 @@ def save_checkpoint(
         "training_config": dict(training_config),
         "model_state_dict": model.checkpoint_state_dict(),
         "optimizer_state_dict": optimizer.state_dict(),
+        "optimizer_name": type(optimizer).__name__,
         "scaler_state_dict": scaler.state_dict(),
         "epoch": state.epoch,
         "batches_completed_in_epoch": state.batches_completed_in_epoch,
@@ -80,6 +81,7 @@ def load_checkpoint(
     scaler: torch.amp.GradScaler,
     learning_rate: float,
     expected_batch_size: int,
+    expected_max_train_samples: int | None = None,
 ) -> TrainingState:
     """Восстановить модель, optimizer, scaler, RNG и позицию обучения."""
 
@@ -109,6 +111,17 @@ def load_checkpoint(
         raise RuntimeError(
             "batch_size checkpoint не совпадает с текущим; "
             "для точного продолжения размер batch менять нельзя"
+        )
+    saved_optimizer_name = payload.get("optimizer_name", "AdamW")
+    if saved_optimizer_name != type(optimizer).__name__:
+        raise RuntimeError(
+            f"Optimizer checkpoint ({saved_optimizer_name}) не совпадает с текущим "
+            f"({type(optimizer).__name__}); состояния AdamW и AdamW8bit не взаимозаменяемы"
+        )
+    if saved_training_config.get("max_train_samples") != expected_max_train_samples:
+        raise RuntimeError(
+            "max_train_samples checkpoint не совпадает с текущим; "
+            "для точного resume нельзя менять состав train Dataset"
         )
 
     model_state = cast(Mapping[str, Tensor], payload.get("model_state_dict"))

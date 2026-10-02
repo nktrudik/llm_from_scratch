@@ -34,3 +34,20 @@ def test_pretrained_config_rejects_invalid_qlora_dtype() -> None:
             adaptation_mode="qlora",
             torch_dtype="float32",
         )
+
+
+def test_qlora_defaults_and_explicit_legacy_parameters() -> None:
+    config = PretrainedConfig(model_id="org/model", adaptation_mode="qlora")
+    assert config.max_sequence_length == 512
+    assert config.torch_dtype == "bfloat16"
+    assert not config.gradient_checkpointing
+    legacy = PretrainedConfig(
+        model_id="org/model",
+        adaptation_mode="qlora",
+        torch_dtype="float16",
+        max_sequence_length=1024,
+        gradient_checkpointing=True,
+    )
+    assert legacy.max_sequence_length == 1024
+    assert legacy.torch_dtype == "float16"
+    assert legacy.gradient_checkpointing

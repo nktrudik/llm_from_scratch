@@ -36,13 +36,13 @@ class HuggingFaceTokenizerProtocol(Protocol):
     def save_pretrained(self, save_directory: str) -> object: ...
 
     def apply_chat_template(
-            self,
-            conversation: list[dict[str, str]],
-            *,
-            tokenize: bool,
-            add_generation_prompt: bool,
-            return_dict: bool,
-        ) -> object: ...
+        self,
+        conversation: list[dict[str, str]],
+        *,
+        tokenize: bool,
+        add_generation_prompt: bool,
+        return_dict: bool,
+    ) -> object: ...
 
 
 class HuggingFaceDialogueTokenizer:
@@ -141,12 +141,9 @@ class HuggingFaceDialogueTokenizer:
         )
 
         if not isinstance(result, list) or not all(
-            isinstance(token, int) and not isinstance(token, bool)
-            for token in result
+            isinstance(token, int) and not isinstance(token, bool) for token in result
         ):
-            raise RuntimeError(
-                "Chat template tokenizer-а не вернул список token IDs"
-            )
+            raise RuntimeError("Chat template tokenizer-а не вернул список token IDs")
 
         return cast(list[int], result)
 

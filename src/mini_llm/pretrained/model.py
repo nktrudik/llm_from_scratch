@@ -60,7 +60,7 @@ class HuggingFaceCausalLMBackend(CausalLMBackend):
     def autocast_dtype(self) -> torch.dtype:
         """Согласовать AMP с compute dtype pretrained-конфигурации."""
 
-        return torch.bfloat16 if self.config.torch_dtype == "bfloat16" else torch.float16
+        return torch.float16 if self.config.torch_dtype == "float16" else torch.bfloat16
 
     def to(self, device: torch.device) -> None:
         """Не перемещать повторно 4-bit модель, уже размещённую Accelerate."""

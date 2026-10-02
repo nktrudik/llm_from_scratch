@@ -21,7 +21,7 @@ from mini_llm.modeling.config import DEFAULT_MAX_SEQUENCE_LENGTH
 from mini_llm.pretrained import PretrainedConfig
 from mini_llm.pretrained.workspace import load_active_model
 from mini_llm.tokenization.config import DEFAULT_TOKENIZER_PATH
-from mini_llm.training import TrainingConfig
+from mini_llm.training import PretrainedTrainingConfig, TrainingConfig
 
 
 class HealthResponse(BaseModel):
@@ -70,6 +70,7 @@ class TrainingRequest(BaseModel):
     random_seed: int = 42
     device: str = "cuda"
     mixed_precision: bool = True
+    max_train_samples: int | None = Field(default=None, ge=1)
 
     @model_validator(mode="after")
     def validate_duration(self) -> Self:
@@ -81,12 +82,28 @@ class TrainingRequest(BaseModel):
             raise ValueError("Для pretrained backend нужен pretrained_config_file")
         if self.model_backend == "custom" and self.pretrained_config_file is not None:
             raise ValueError("pretrained_config_file допустим только для pretrained backend")
+        if self.model_backend == "pretrained":
+            defaults = PretrainedTrainingConfig(pretrained_config_file=self.pretrained_config_file)
+            for name in (
+                "batch_size",
+                "num_workers",
+                "max_train_samples",
+                "log_interval",
+                "validation_interval",
+                "validation_batches",
+                "checkpoint_interval",
+            ):
+                if name not in self.model_fields_set:
+                    setattr(self, name, getattr(defaults, name))
         return self
 
     def to_config(self) -> TrainingConfig:
         """Преобразовать HTTP-схему во внутреннюю конфигурацию training pipeline."""
 
-        return TrainingConfig(**self.model_dump())
+        config_class = (
+            PretrainedTrainingConfig if self.model_backend == "pretrained" else TrainingConfig
+        )
+        return config_class(**self.model_dump())
 
 
 class PretrainedPrepareRequest(BaseModel):
@@ -97,7 +114,7 @@ class PretrainedPrepareRequest(BaseModel):
     cache_dir: Path = Field(default_factory=lambda: Path(".cache/huggingface"))
     adaptation_mode: str = Field(default="lora", pattern="^(full|lora|qlora)$")
     torch_dtype: str = Field(default="auto", pattern="^(auto|float32|float16|bfloat16)$")
-    max_sequence_length: int = Field(default=1024, ge=2)
+    max_sequence_length: int = Field(default=512, ge=2)
     local_files_only: bool = False
     trust_remote_code: bool = False
     gradient_checkpointing: bool = True
@@ -109,6 +126,17 @@ class PretrainedPrepareRequest(BaseModel):
     qlora_double_quant: bool = True
     device_map: str | None = None
     output_config: Path = Field(default_factory=lambda: Path("configs/pretrained/model.json"))
+
+    @model_validator(mode="after")
+    def apply_qlora_defaults(self) -> Self:
+        """Согласовать HTTP-defaults QLoRA с конфигом модели, не меняя явные значения."""
+
+        if self.adaptation_mode == "qlora":
+            if "torch_dtype" not in self.model_fields_set:
+                self.torch_dtype = "bfloat16"
+            if "gradient_checkpointing" not in self.model_fields_set:
+                self.gradient_checkpointing = False
+        return self
 
     def to_config(self) -> PretrainedConfig:
         """Преобразовать HTTP-схему в проверенную pretrained-конфигурацию."""

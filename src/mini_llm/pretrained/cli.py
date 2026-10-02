@@ -26,9 +26,10 @@ def build_argument_parser() -> argparse.ArgumentParser:
     prepare.add_argument("--cache-dir", type=Path, default=Path(".cache/huggingface"))
     prepare.add_argument("--output-config", type=Path, required=True)
     prepare.add_argument(
-        "--dtype", choices=("auto", "float32", "float16", "bfloat16"), default="auto"
+        "--dtype", choices=("auto", "float32", "float16", "bfloat16"), default=None
     )
-    prepare.add_argument("--max-sequence-length", type=int, default=1024)
+    prepare.add_argument("--max-sequence-length", type=int, default=512)
+    prepare.add_argument("--gradient-checkpointing", action=argparse.BooleanOptionalAction)
     prepare.add_argument("--lora-rank", type=int, default=16)
     prepare.add_argument("--lora-alpha", type=int, default=32)
     prepare.add_argument("--lora-dropout", type=float, default=0.05)
@@ -39,10 +40,22 @@ def build_argument_parser() -> argparse.ArgumentParser:
     setup.add_argument("--mode", choices=("full", "lora", "qlora"), default="qlora")
     setup.add_argument("--cache-dir", type=Path, default=Path(".cache/huggingface"))
     setup.add_argument("--dtype", choices=("auto", "float32", "float16", "bfloat16"), default=None)
-    setup.add_argument("--max-sequence-length", type=int, default=1024)
+    setup.add_argument("--max-sequence-length", type=int, default=512)
+    setup.add_argument("--gradient-checkpointing", action=argparse.BooleanOptionalAction)
     setup.add_argument("--train", action="store_true", help="После загрузки явно запустить SFT")
     setup.add_argument("--splits-dir", type=Path, default=Path("data/processed/splits"))
-    setup.add_argument("--batch-size", type=int, choices=range(1, MAX_BATCH_SIZE + 1), default=1)
+    setup.add_argument("--batch-size", type=int, choices=range(1, MAX_BATCH_SIZE + 1), default=2)
+    setup.add_argument("--num-workers", type=int, default=2)
+    setup.add_argument(
+        "--max-train-samples",
+        type=int,
+        default=30_000,
+        help="Лимит train samples; 0 — использовать весь train",
+    )
+    setup.add_argument("--log-interval", type=int, default=100)
+    setup.add_argument("--validation-interval", type=int, default=500)
+    setup.add_argument("--validation-batches", type=int, default=50)
+    setup.add_argument("--checkpoint-interval", type=int, default=500)
     setup.add_argument("--epochs", type=int, default=3)
     setup.add_argument("--learning-rate", type=float)
     setup.add_argument("--resume-from", type=Path)
@@ -53,7 +66,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
 def _run_setup(args: argparse.Namespace) -> int:
     """Запустить download/config pipeline; обучение возможно только по --train."""
 
-    from mini_llm.training import TrainingConfig, train_model
+    from mini_llm.training import PretrainedTrainingConfig, train_model
 
     try:
         if args.resume_from is not None and not args.train:
@@ -66,12 +79,18 @@ def _run_setup(args: argparse.Namespace) -> int:
             if args.resume_from is not None and not args.resume_from.is_file():
                 raise RuntimeError(f"Resume checkpoint не найден: {args.resume_from}")
             paths = ModelPaths.for_model(args.model_id, args.mode)
-            training_config = TrainingConfig(
+            training_config = PretrainedTrainingConfig(
                 model_backend="pretrained",
                 pretrained_config_file=paths.config_file,
                 checkpoint_dir=paths.checkpoint_dir,
                 splits_dir=args.splits_dir,
                 batch_size=args.batch_size,
+                num_workers=args.num_workers,
+                max_train_samples=None if args.max_train_samples == 0 else args.max_train_samples,
+                log_interval=args.log_interval,
+                validation_interval=args.validation_interval,
+                validation_batches=args.validation_batches,
+                checkpoint_interval=args.checkpoint_interval,
                 epochs=args.epochs,
                 learning_rate=(
                     args.learning_rate
@@ -88,6 +107,7 @@ def _run_setup(args: argparse.Namespace) -> int:
             cache_dir=args.cache_dir,
             torch_dtype=args.dtype,
             max_sequence_length=args.max_sequence_length,
+            gradient_checkpointing=args.gradient_checkpointing,
         )
         print(
             f"Модель зарегистрирована: {registration.model_id} commit={registration.revision}\n"
@@ -114,8 +134,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         revision=args.revision,
         cache_dir=args.cache_dir,
         adaptation_mode=args.mode,
-        torch_dtype=args.dtype,
+        torch_dtype=args.dtype or ("float32" if args.mode == "full" else "bfloat16"),
         max_sequence_length=args.max_sequence_length,
+        gradient_checkpointing=(
+            args.gradient_checkpointing
+            if args.gradient_checkpointing is not None
+            else args.mode != "qlora"
+        ),
         lora_rank=args.lora_rank,
         lora_alpha=args.lora_alpha,
         lora_dropout=args.lora_dropout,

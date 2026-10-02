@@ -36,6 +36,7 @@ class TrainingConfig:
     random_seed: int = 42
     device: str = "cuda"
     mixed_precision: bool = True
+    max_train_samples: int | None = None
 
     def __post_init__(self) -> None:
         if self.model_backend == "pretrained" and self.pretrained_config_file is None:
@@ -66,3 +67,19 @@ class TrainingConfig:
             raise ValueError("weight_decay не может быть отрицательным")
         if self.gradient_clip_norm <= 0.0:
             raise ValueError("gradient_clip_norm должен быть положительным")
+        if self.max_train_samples is not None and self.max_train_samples <= 0:
+            raise ValueError("max_train_samples должен быть положительным или None (весь train)")
+
+
+@dataclass(frozen=True, slots=True)
+class PretrainedTrainingConfig(TrainingConfig):
+    """Стартовый профиль pretrained-обучения для GPU с 4 GB VRAM."""
+
+    model_backend: Literal["custom", "pretrained"] = "pretrained"
+    batch_size: int = 2
+    num_workers: int = 2
+    max_train_samples: int | None = 30_000
+    log_interval: int = 100
+    validation_interval: int = 500
+    validation_batches: int = 50
+    checkpoint_interval: int = 500

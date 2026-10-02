@@ -20,7 +20,8 @@ def setup_pretrained_model(
     mode: AdaptationMode = "qlora",
     cache_dir: Path = Path(".cache/huggingface"),
     torch_dtype: TorchDType | None = None,
-    max_sequence_length: int = 1024,
+    max_sequence_length: int = 512,
+    gradient_checkpointing: bool | None = None,
 ) -> ModelRegistration:
     """Скачать файлы, проверить tokenizer и зарегистрировать модель; SFT не запускать."""
 
@@ -31,8 +32,11 @@ def setup_pretrained_model(
         revision=revision,
         cache_dir=cache_dir,
         adaptation_mode=mode,
-        torch_dtype=torch_dtype or ("float32" if mode == "full" else "float16"),
+        torch_dtype=torch_dtype or ("float32" if mode == "full" else "bfloat16"),
         max_sequence_length=max_sequence_length,
+        gradient_checkpointing=(
+            gradient_checkpointing if gradient_checkpointing is not None else mode != "qlora"
+        ),
         local_files_only=True,
     )
     snapshot = download_model_snapshot(model_id, revision, cache_dir)

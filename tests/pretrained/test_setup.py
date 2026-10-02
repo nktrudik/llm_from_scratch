@@ -50,8 +50,15 @@ def test_setup_pins_revision_and_registers_artifacts(
     assert config.revision == "a" * 40
     assert config.adaptation_mode == mode
     assert config.local_files_only
-    assert config.max_sequence_length == 1024
-    assert config.torch_dtype == ("float32" if mode == "full" else "float16")
+    assert config.max_sequence_length == 512
+    assert config.torch_dtype == ("float32" if mode == "full" else "bfloat16")
+    assert config.gradient_checkpointing == (mode != "qlora")
+    assert config.lora_rank == 16
+    assert config.lora_alpha == 32
+    assert config.lora_dropout == 0.05
+    assert config.lora_target_modules == "all-linear"
+    assert config.qlora_quant_type == "nf4"
+    assert config.qlora_double_quant
     assert registration.config_file == paths.config_file
     assert registration.snapshot_path == fake_setup_environment
     assert registration.checkpoint_dir.is_dir()
@@ -148,7 +155,8 @@ def test_setup_cli_requires_only_model_id() -> None:
     args = cli.build_argument_parser().parse_args(["setup", "owner/model"])
     assert args.command == "setup"
     assert args.mode == "qlora"
-    assert args.batch_size == 1
+    assert args.batch_size == 2
+    assert args.max_sequence_length == 512
     assert not args.train
 
 
@@ -197,7 +205,13 @@ def test_setup_cli_train_passes_registered_paths_to_existing_trainer(
     assert calls[0].model_backend == "pretrained"
     assert calls[0].pretrained_config_file == ModelPaths.for_model("owner/model").config_file
     assert calls[0].checkpoint_dir == ModelPaths.for_model("owner/model").checkpoint_dir
-    assert calls[0].batch_size == 1
+    assert calls[0].batch_size == 2
+    assert calls[0].max_train_samples == 30_000
+    assert calls[0].num_workers == 2
+    assert calls[0].log_interval == 100
+    assert calls[0].validation_interval == 500
+    assert calls[0].validation_batches == 50
+    assert calls[0].checkpoint_interval == 500
     assert calls[0].epochs == 3
     assert calls[0].learning_rate == 0.0002
 
@@ -212,3 +226,59 @@ def test_setup_does_not_activate_failed_download(
     with pytest.raises(RuntimeError, match="Ошибка Hub"):
         setup.setup_pretrained_model("owner/model")
     assert not ACTIVE_MODEL_FILE.exists()
+
+
+def test_setup_cli_preserves_explicit_fp16_and_full_dataset_option(
+    fake_setup_environment: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import mini_llm.training as training
+
+    splits = Path("data/processed/splits")
+    splits.mkdir(parents=True)
+    for split in ("train", "validation"):
+        (splits / f"{split}.jsonl").touch()
+    calls: list[TrainingConfig] = []
+
+    def train(config: TrainingConfig) -> TrainingResult:
+        calls.append(config)
+        return TrainingResult(1, 1.0, config.checkpoint_dir / "last.pt", False)
+
+    monkeypatch.setattr(training, "train_model", train)
+    assert (
+        cli.main(
+            [
+                "setup",
+                "owner/model",
+                "--train",
+                "--dtype",
+                "float16",
+                "--gradient-checkpointing",
+                "--max-train-samples",
+                "0",
+                "--num-workers",
+                "0",
+                "--batch-size",
+                "1",
+                "--log-interval",
+                "7",
+                "--validation-interval",
+                "13",
+                "--validation-batches",
+                "0",
+                "--checkpoint-interval",
+                "17",
+            ]
+        )
+        == 0
+    )
+    config = PretrainedConfig.load(ModelPaths.for_model("owner/model").config_file)
+    assert config.torch_dtype == "float16"
+    assert config.gradient_checkpointing
+    assert config.max_sequence_length == 512
+    assert calls[0].max_train_samples is None
+    assert calls[0].batch_size == 1
+    assert calls[0].num_workers == 0
+    assert calls[0].log_interval == 7
+    assert calls[0].validation_interval == 13
+    assert calls[0].validation_batches == 0
+    assert calls[0].checkpoint_interval == 17
