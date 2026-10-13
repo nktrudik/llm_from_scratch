@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -12,6 +13,7 @@ from mini_llm.pretrained.config import AdaptationMode
 
 DEFAULT_MODEL_ID = "Qwen/Qwen2.5-0.5B-Instruct"
 ACTIVE_MODEL_FILE = Path("artifacts/pretrained/active.json")
+ADAPTATION_MODES: tuple[AdaptationMode, ...] = ("qlora", "lora", "full")
 
 
 @dataclass(frozen=True, slots=True)
@@ -73,7 +75,51 @@ def load_active_model() -> ModelRegistration | None:
 
     if not ACTIVE_MODEL_FILE.is_file():
         return None
+    return _load_registration(ACTIVE_MODEL_FILE)
+
+
+def _load_registration(path: Path) -> ModelRegistration:
+    """Прочитать регистрацию без загрузки весов."""
+
     try:
-        return ModelRegistration.model_validate_json(ACTIVE_MODEL_FILE.read_text(encoding="utf-8"))
+        return ModelRegistration.model_validate_json(path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as error:
-        raise RuntimeError(f"Не удалось прочитать {ACTIVE_MODEL_FILE}: {error}") from error
+        raise RuntimeError(f"Не удалось прочитать {path}: {error}") from error
+
+
+def load_registered_model(model_id: str) -> ModelRegistration | None:
+    """Выбрать модель, не изменяя active.json; приоритет режимов: QLoRA, LoRA, full."""
+
+    ModelPaths.for_model(model_id)
+    active = load_active_model()
+    if active is not None and active.model_id == model_id:
+        return active
+    for mode in ADAPTATION_MODES:
+        path = ModelPaths.for_model(model_id, mode).registration_file
+        if path.is_file():
+            registration = _load_registration(path)
+            if registration.model_id != model_id:
+                raise RuntimeError(f"Регистрация {path} не соответствует model ID {model_id}")
+            return registration
+    return None
+
+
+def list_registered_models() -> list[ModelRegistration]:
+    """Перечислить локальные модели; активная регистрация имеет приоритет."""
+
+    registrations: dict[str, ModelRegistration] = {}
+    for mode in ADAPTATION_MODES:
+        for path in sorted(ACTIVE_MODEL_FILE.parent.glob(f"model--*/{mode}.json")):
+            try:
+                registration = _load_registration(path)
+                expected = ModelPaths.for_model(registration.model_id, mode).registration_file
+                if expected != path:
+                    raise ValueError("Путь регистрации не соответствует model ID")
+            except (RuntimeError, ValueError) as error:
+                logging.getLogger(__name__).warning("Регистрация пропущена: %s", error)
+                continue
+            registrations.setdefault(registration.model_id, registration)
+    active = load_active_model()
+    if active is not None:
+        registrations[active.model_id] = active
+    return [registrations[model_id] for model_id in sorted(registrations)]

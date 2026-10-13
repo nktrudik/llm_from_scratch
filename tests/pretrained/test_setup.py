@@ -8,7 +8,13 @@ import pytest
 from mini_llm.pretrained import PretrainedConfig, cli, download, setup
 from mini_llm.pretrained.config import AdaptationMode
 from mini_llm.pretrained.download import DownloadedSnapshot, select_model_files
-from mini_llm.pretrained.workspace import ACTIVE_MODEL_FILE, ModelPaths, ModelRegistration
+from mini_llm.pretrained.workspace import (
+    ACTIVE_MODEL_FILE,
+    ModelPaths,
+    ModelRegistration,
+    list_registered_models,
+    load_registered_model,
+)
 from mini_llm.training import TrainingConfig
 from mini_llm.training.schemas import TrainingResult
 
@@ -91,6 +97,46 @@ def test_model_paths_isolate_models_and_adaptation_modes() -> None:
     another = ModelPaths.for_model("another/model", "lora")
     assert len({first.checkpoint_dir, second.checkpoint_dir, another.checkpoint_dir}) == 3
     assert len({first.config_file, second.config_file, another.config_file}) == 3
+
+
+def test_qwen3_setup_preserves_qwen25_artifacts(fake_setup_environment: Path) -> None:
+    """Вторая модель получает отдельные пути и не перезаписывает первый checkpoint."""
+
+    first = setup.setup_pretrained_model("Qwen/Qwen2.5-0.5B-Instruct")
+    first.best_checkpoint.write_bytes(b"old checkpoint")
+    old_config = first.config_file.read_bytes()
+    second = setup.setup_pretrained_model("Qwen/Qwen3-0.6B")
+
+    assert first.config_file != second.config_file
+    assert first.checkpoint_dir != second.checkpoint_dir
+    assert first.config_file.read_bytes() == old_config
+    assert first.best_checkpoint.read_bytes() == b"old checkpoint"
+    assert second.config_file == Path("configs/pretrained/model--qwen--qwen3-0.6b-qlora.json")
+    assert second.checkpoint_dir == Path("checkpoints/pretrained/model--qwen--qwen3-0.6b/qlora")
+    active_before_selection = ACTIVE_MODEL_FILE.read_bytes()
+    assert load_registered_model(first.model_id) == first
+    assert load_registered_model(second.model_id) == second
+    assert [item.model_id for item in list_registered_models()] == [first.model_id, second.model_id]
+    assert ACTIVE_MODEL_FILE.read_bytes() == active_before_selection
+
+
+def test_model_selection_prefers_active_mode_then_qlora(fake_setup_environment: Path) -> None:
+    """Выбор model ID не должен смешивать адаптеры разных режимов."""
+
+    qlora = setup.setup_pretrained_model("owner/model", mode="qlora")
+    lora = setup.setup_pretrained_model("owner/model", mode="lora")
+    assert load_registered_model("owner/model") == lora
+    setup.setup_pretrained_model("another/model")
+    assert load_registered_model("owner/model") == qlora
+    assert load_registered_model("missing/model") is None
+
+
+def test_invalid_registration_does_not_hide_other_models(fake_setup_environment: Path) -> None:
+    registration = setup.setup_pretrained_model("owner/model")
+    corrupt = ModelPaths.for_model("broken/model").registration_file
+    corrupt.parent.mkdir(parents=True)
+    corrupt.write_text("{", encoding="utf-8")
+    assert list_registered_models() == [registration]
 
 
 def test_download_prefers_safetensors_and_retains_tokenizer_assets() -> None:

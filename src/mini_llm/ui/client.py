@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import cast
 
 import requests
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, Field, ValidationError
 
 from mini_llm.ui.config import API_BASE_URL, REQUEST_TIMEOUT, ModelBackend, PretrainedMode
 
@@ -13,13 +13,19 @@ class GenerationAPIError(RuntimeError):
     """Ошибка API, которую можно показать пользователю чата."""
 
 
-class GenerationOptions(BaseModel):
-    """Доступность pretrained-режимов, полученная от сервера без загрузки модели."""
+class PretrainedModelOptions(BaseModel):
+    """Доступность pretrained-режимов одной модели, полученная от сервера."""
 
     model_id: str
     before_sft_available: bool
     after_sft_available: bool
     reason: str | None = None
+
+
+class GenerationOptions(PretrainedModelOptions):
+    """Каталог моделей с совместимостью с прежним ответом без списка models."""
+
+    models: list[PretrainedModelOptions] = Field(default_factory=list)
 
 
 def _response_payload(response: requests.Response) -> object:
@@ -56,10 +62,15 @@ def generate_reply(
     model_backend: ModelBackend,
     pretrained_mode: PretrainedMode | None = None,
     checkpoint_name: str | None = None,
+    pretrained_model_id: str | None = None,
 ) -> str:
     """Передать prompt, backend и режим Qwen; пути и параметры выбирает API."""
 
     body = {"prompt": prompt, "model_backend": model_backend}
+    if pretrained_model_id is not None:
+        if model_backend != "pretrained":
+            raise GenerationAPIError("Model ID допустим только для Qwen/pretrained backend")
+        body["pretrained_model_id"] = pretrained_model_id
     if model_backend == "pretrained" and pretrained_mode is not None:
         body["pretrained_mode"] = pretrained_mode
     if pretrained_mode == "custom_checkpoint":

@@ -133,6 +133,72 @@ def test_client_reads_availability_from_api(monkeypatch: pytest.MonkeyPatch) -> 
     assert not options.after_sft_available
 
 
+def test_client_reads_registered_model_catalog(monkeypatch: pytest.MonkeyPatch) -> None:
+    def get(*args: object, **kwargs: object) -> requests.Response:
+        return make_response(
+            {
+                "model_id": "Qwen/Qwen3-0.6B",
+                "before_sft_available": True,
+                "after_sft_available": False,
+                "models": [
+                    {
+                        "model_id": "Qwen/Qwen2.5-0.5B-Instruct",
+                        "before_sft_available": True,
+                        "after_sft_available": True,
+                    },
+                    {
+                        "model_id": "Qwen/Qwen3-0.6B",
+                        "before_sft_available": True,
+                        "after_sft_available": False,
+                    },
+                ],
+            }
+        )
+
+    monkeypatch.setattr(requests.Session, "get", get)
+    assert len(get_generation_options().models) == 2
+
+
+def test_client_sends_selected_model_id_without_paths(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[object] = []
+
+    def post(*args: object, **kwargs: object) -> requests.Response:
+        calls.append(kwargs["json"])
+        return make_response({"text": "Ответ"})
+
+    monkeypatch.setattr(requests.Session, "post", post)
+    assert (
+        generate_reply(
+            "Текст",
+            "pretrained",
+            "custom_checkpoint",
+            "last.pt",
+            pretrained_model_id="Qwen/Qwen3-0.6B",
+        )
+        == "Ответ"
+    )
+    assert calls == [
+        {
+            "prompt": "Текст",
+            "model_backend": "pretrained",
+            "pretrained_mode": "custom_checkpoint",
+            "checkpoint_name": "last.pt",
+            "pretrained_model_id": "Qwen/Qwen3-0.6B",
+        }
+    ]
+
+
+def test_client_rejects_model_id_for_custom_without_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def unexpected_request(*args: object, **kwargs: object) -> requests.Response:
+        pytest.fail("Выбор pretrained model ID для Custom не должен отправляться в API")
+
+    monkeypatch.setattr(requests.Session, "post", unexpected_request)
+    with pytest.raises(GenerationAPIError, match="Model ID"):
+        generate_reply("Текст", "custom", pretrained_model_id="Qwen/Qwen3-0.6B")
+
+
 def test_client_sends_only_checkpoint_name_without_paths(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[object] = []
 

@@ -13,7 +13,7 @@ from mini_llm.inference.config import GenerationConfig
 from mini_llm.inference.options import pretrained_generation_options
 from mini_llm.inference.schemas import GenerationResult
 from mini_llm.pretrained import PretrainedConfig
-from mini_llm.pretrained.workspace import ACTIVE_MODEL_FILE, ModelRegistration
+from mini_llm.pretrained.workspace import ACTIVE_MODEL_FILE, ModelPaths, ModelRegistration
 
 
 @pytest.fixture
@@ -84,6 +84,100 @@ def test_mismatched_registration_disables_generation(registered_model: ModelRegi
         registered_model.config_file
     )
     assert not pretrained_generation_options().before_sft_available
+
+
+@pytest.fixture
+def second_registered_model(registered_model: ModelRegistration) -> ModelRegistration:
+    """Добавить неактивную модель без настоящих весов, оставив активную неизменной."""
+
+    paths = ModelPaths.for_model("Qwen/Qwen3-0.6B")
+    PretrainedConfig(model_id="Qwen/Qwen3-0.6B", revision="b" * 40).save(paths.config_file)
+    snapshot = Path("qwen3_snapshot")
+    snapshot.mkdir()
+    paths.checkpoint_dir.mkdir(parents=True)
+    registration = ModelRegistration(
+        model_id="Qwen/Qwen3-0.6B",
+        revision="b" * 40,
+        config_file=paths.config_file,
+        checkpoint_dir=paths.checkpoint_dir,
+        snapshot_path=snapshot,
+    )
+    registration.save(paths.registration_file)
+    return registration
+
+
+def test_options_list_models_with_independent_checkpoint_availability(
+    registered_model: ModelRegistration, second_registered_model: ModelRegistration
+) -> None:
+    registered_model.best_checkpoint.write_bytes(b"old best")
+    active_before = ACTIVE_MODEL_FILE.read_bytes()
+    options = api_module.generation_options()
+    assert options.model_id == registered_model.model_id
+    assert options.after_sft_available
+    by_id = {item.model_id: item for item in options.models}
+    assert by_id[registered_model.model_id].after_sft_available
+    assert by_id[second_registered_model.model_id].before_sft_available
+    assert not by_id[second_registered_model.model_id].after_sft_available
+    assert ACTIVE_MODEL_FILE.read_bytes() == active_before
+
+
+@pytest.mark.parametrize("mode", ["before_sft", "after_sft", "custom_checkpoint"])
+def test_selected_model_uses_only_its_config_and_checkpoints(
+    registered_model: ModelRegistration,
+    second_registered_model: ModelRegistration,
+    mode: str,
+) -> None:
+    checkpoint = second_registered_model.checkpoint_dir / "step_00000500.pt"
+    checkpoint.write_bytes(b"new checkpoint")
+    active_before = ACTIVE_MODEL_FILE.read_bytes()
+    payload: dict[str, object] = {
+        "prompt": "Текст",
+        "model_backend": "pretrained",
+        "pretrained_model_id": second_registered_model.model_id,
+        "pretrained_mode": mode,
+    }
+    if mode == "custom_checkpoint":
+        payload["checkpoint_name"] = checkpoint.name
+    config = GenerationRequest.model_validate(payload).to_config()
+    assert config.pretrained_config_file == second_registered_model.config_file
+    expected = (
+        None
+        if mode == "before_sft"
+        else second_registered_model.best_checkpoint
+        if mode == "after_sft"
+        else checkpoint
+    )
+    assert config.checkpoint_file == expected
+    assert config.tokenizer_file is None
+    assert ACTIVE_MODEL_FILE.read_bytes() == active_before
+
+
+def test_unknown_model_cannot_fall_back_to_active(registered_model: ModelRegistration) -> None:
+    with pytest.raises(ValidationError, match="не зарегистрирована"):
+        GenerationRequest(
+            prompt="Текст", model_backend="pretrained", pretrained_model_id="missing/model"
+        )
+    assert not pretrained_generation_options("missing/model").before_sft_available
+
+
+@pytest.mark.parametrize(
+    "extra", [{"checkpoint_file": "old.pt"}, {"pretrained_config_file": "old.json"}]
+)
+def test_model_selection_rejects_ambiguous_explicit_paths(extra: dict[str, str]) -> None:
+    with pytest.raises(ValidationError, match="пути определяются регистрацией"):
+        GenerationRequest.model_validate(
+            {
+                "prompt": "Текст",
+                "model_backend": "pretrained",
+                "pretrained_model_id": "Qwen/Qwen3-0.6B",
+                **extra,
+            }
+        )
+
+
+def test_custom_rejects_pretrained_model_selection() -> None:
+    with pytest.raises(ValidationError, match="только для pretrained"):
+        GenerationRequest(prompt="Текст", pretrained_model_id="Qwen/Qwen3-0.6B")
 
 
 def test_custom_rejects_pretrained_mode() -> None:

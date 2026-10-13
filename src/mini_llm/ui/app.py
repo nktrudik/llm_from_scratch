@@ -21,20 +21,31 @@ def main() -> None:
         "Модель", MODEL_BACKENDS, format_func=lambda value: MODEL_LABELS[value]
     )
     mode: PretrainedMode | None = None
+    pretrained_model_id: str | None = None
     checkpoint_name: str | None = None
     ready = True
     if backend == "pretrained":
         try:
             options = get_generation_options()
-            ready = options.before_sft_available
-            st.caption(options.model_id)
+            if options.models:
+                model_ids = [item.model_id for item in options.models]
+                default_index = (
+                    model_ids.index(options.model_id) if options.model_id in model_ids else 0
+                )
+                pretrained_model_id = st.selectbox("Модель Qwen", model_ids, index=default_index)
+            availability = next(
+                (item for item in options.models if item.model_id == pretrained_model_id), options
+            )
+            ready = availability.before_sft_available
+            st.caption(availability.model_id)
             modes: list[PretrainedMode] = ["before_sft"]
-            if options.after_sft_available:
+            if availability.after_sft_available:
                 modes.append("after_sft")
             modes.append("custom_checkpoint")
             mode = st.radio(
                 "Режим Qwen",
                 modes,
+                key=f"qwen_mode_{availability.model_id}",
                 # При горячем обновлении Streamlit может сохранить старый словарь подписей.
                 format_func=lambda value: MODE_LABELS.get(
                     value, "Свой чекпоинт" if value == "custom_checkpoint" else value
@@ -43,12 +54,13 @@ def main() -> None:
             if mode == "custom_checkpoint":
                 checkpoint_name = st.text_input(
                     "Имя чекпоинта",
+                    key=f"qwen_checkpoint_{availability.model_id}",
                     placeholder="step_00000500.pt",
-                    help="Только имя .pt файла. Каталог активной модели выбирает API.",
+                    help="Только имя .pt файла. API выбирает каталог выбранной модели.",
                 ).strip()
                 ready = ready and bool(checkpoint_name)
-            if options.reason:
-                st.caption(options.reason + " Обновите страницу после подготовки/обучения.")
+            if availability.reason:
+                st.caption(availability.reason + " Обновите страницу после подготовки/обучения.")
         except GenerationAPIError as error:
             st.error(str(error))
             ready = False
@@ -59,7 +71,15 @@ def main() -> None:
         st.markdown(prompt)
     try:
         with st.spinner("Модель готовит ответ…"):
-            if mode == "custom_checkpoint":
+            if pretrained_model_id is not None:
+                reply = generate_reply(
+                    prompt,
+                    backend,
+                    mode,
+                    checkpoint_name=checkpoint_name,
+                    pretrained_model_id=pretrained_model_id,
+                )
+            elif mode == "custom_checkpoint":
                 reply = generate_reply(prompt, backend, mode, checkpoint_name=checkpoint_name)
             elif backend == "pretrained":
                 reply = generate_reply(prompt, backend, mode)

@@ -15,6 +15,7 @@ from mini_llm.api.schemas import (
     HealthResponse,
     JobResponse,
     PreprocessingRequest,
+    PretrainedModelOptionsResponse,
     PretrainedPrepareRequest,
     ScrapeRequest,
     TokenizerTrainingRequest,
@@ -32,6 +33,7 @@ from mini_llm.api.services import (
 )
 from mini_llm.inference import clear_pretrained_cache, generate_response
 from mini_llm.inference.options import pretrained_generation_options
+from mini_llm.pretrained.workspace import list_registered_models
 
 app = FastAPI(
     title="mini_llm local control API",
@@ -163,14 +165,30 @@ def start_scraper(request: ScrapeRequest, background_tasks: BackgroundTasks) -> 
 
 @app.get("/v1/generate/options", response_model=GenerationOptionsResponse)
 def generation_options() -> GenerationOptionsResponse:
-    """Проверить доступность до/после SFT, не загружая веса в CPU или GPU."""
+    """Перечислить модели и режимы, не загружая веса в CPU или GPU."""
 
     availability = pretrained_generation_options()
+    try:
+        registrations = list_registered_models()
+    except (OSError, RuntimeError, ValueError) as error:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)) from error
+    models = []
+    for registration in registrations:
+        options = pretrained_generation_options(registration.model_id)
+        models.append(
+            PretrainedModelOptionsResponse(
+                model_id=options.model_id,
+                before_sft_available=options.before_sft_available,
+                after_sft_available=options.after_sft_available,
+                reason=options.reason,
+            )
+        )
     return GenerationOptionsResponse(
         model_id=availability.model_id,
         before_sft_available=availability.before_sft_available,
         after_sft_available=availability.after_sft_available,
         reason=availability.reason,
+        models=models,
     )
 
 

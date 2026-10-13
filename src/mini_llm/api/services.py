@@ -14,6 +14,7 @@ from mini_llm.api.schemas import (
     TrainingRequest,
 )
 from mini_llm.data.preprocessing import preprocess_dataset
+from mini_llm.data.preprocessing.sft import SFTPreprocessingConfig, preprocess_sft_dataset
 from mini_llm.data.scraping import TwoChScraper
 from mini_llm.data.splitting import SplitConfig, split_dataset
 from mini_llm.data.statistics import TokenStatisticsConfig, calculate_token_statistics
@@ -63,6 +64,15 @@ def run_tokenizer_training(request: TokenizerTrainingRequest) -> dict[str, objec
 def run_preprocessing(request: PreprocessingRequest) -> dict[str, object]:
     """Выполнить preprocessing и вернуть итоговую статистику."""
 
+    if request.source_format == "sft":
+        return preprocess_sft_dataset(
+            SFTPreprocessingConfig(
+                input_dir=request.input_dir,
+                output_dir=request.output_dir,
+                review_size=request.review_size,
+                random_seed=request.random_seed,
+            )
+        ).to_dict()
     return preprocess_dataset(request.to_config()).to_dict()
 
 

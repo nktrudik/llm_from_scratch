@@ -20,7 +20,7 @@ from mini_llm.inference.config import (
 )
 from mini_llm.modeling.config import DEFAULT_MAX_SEQUENCE_LENGTH
 from mini_llm.pretrained import PretrainedConfig
-from mini_llm.pretrained.workspace import load_active_model
+from mini_llm.pretrained.workspace import load_active_model, load_registered_model
 from mini_llm.tokenization.config import DEFAULT_TOKENIZER_PATH
 from mini_llm.training import PretrainedTrainingConfig, TrainingConfig
 
@@ -160,16 +160,25 @@ class PreprocessingRequest(BaseModel):
     """Параметры preprocessing raw-тредов."""
 
     input_dir: Path = Field(default_factory=lambda: Path("data/raw/2ch"))
+    source_format: Literal["posts", "sft"] = "posts"
     output_dir: Path = Field(default_factory=lambda: Path("data/processed"))
     review_size: int = Field(default=100, ge=0)
     random_seed: int = 42
     dedup_min_characters: int = Field(default=80, ge=1)
     near_duplicate_threshold: float = Field(default=0.9, gt=0, le=1)
 
+    @model_validator(mode="after")
+    def select_input_directory(self) -> Self:
+        """Выбрать каталог очищенного SFT только для явно выбранного режима."""
+
+        if self.source_format == "sft" and "input_dir" not in self.model_fields_set:
+            self.input_dir = Path("data/raw/2ch_clean")
+        return self
+
     def to_config(self) -> PreprocessingConfig:
         """Преобразовать запрос во внутреннюю конфигурацию preprocessing."""
 
-        return PreprocessingConfig(**self.model_dump())
+        return PreprocessingConfig(**self.model_dump(exclude={"source_format"}))
 
 
 class DatasetSplitRequest(BaseModel):
@@ -216,10 +225,15 @@ class GenerationRequest(BaseModel):
     checkpoint_file: Path | None = Field(default_factory=lambda: DEFAULT_CUSTOM_CHECKPOINT_PATH)
     tokenizer_file: Path | None = Field(default_factory=lambda: DEFAULT_TOKENIZER_PATH)
     pretrained_config_file: Path | None = None
+    pretrained_model_id: str | None = Field(
+        default=None,
+        min_length=1,
+        description="Model ID локально зарегистрированной модели; без него используется активная",
+    )
     pretrained_mode: PretrainedGenerationMode | None = None
     checkpoint_name: str | None = Field(
         default=None,
-        description="Имя .pt файла в каталоге активной модели для custom_checkpoint",
+        description="Имя .pt файла в каталоге выбранной модели для custom_checkpoint",
     )
     device: str = "cuda"
     max_new_tokens: int = Field(default=256, ge=0)
@@ -251,6 +265,7 @@ class GenerationRequest(BaseModel):
                     "prompt": "Привет! Как у тебя дела?",
                     "pretrained_mode": "custom_checkpoint",
                     "checkpoint_name": "step_00000500.pt",
+                    "pretrained_model_id": "Qwen/Qwen3-0.6B",
                 },
             ]
         }
@@ -260,6 +275,11 @@ class GenerationRequest(BaseModel):
     def validate_backend_files(self) -> Self:
         """Подставить defaults выбранного backend и проверить обязательные файлы."""
 
+        if self.pretrained_model_id is not None:
+            if self.model_backend != "pretrained":
+                raise ValueError("pretrained_model_id допустим только для pretrained backend")
+            if {"checkpoint_file", "pretrained_config_file"} & self.model_fields_set:
+                raise ValueError("При выборе pretrained_model_id пути определяются регистрацией")
         if self.checkpoint_name is not None:
             if self.model_backend != "pretrained" or self.pretrained_mode != "custom_checkpoint":
                 raise ValueError("checkpoint_name допустим только в режиме custom_checkpoint Qwen")
@@ -272,7 +292,7 @@ class GenerationRequest(BaseModel):
                     "В custom_checkpoint передавайте checkpoint_name, не checkpoint_file"
                 )
             if "pretrained_config_file" in self.model_fields_set:
-                raise ValueError("В custom_checkpoint конфиг определяется активной моделью")
+                raise ValueError("В custom_checkpoint конфиг определяется регистрацией модели")
         if self.model_backend == "pretrained":
             # Явно переданные пути сохраняются; defaults выбирает API, а не UI.
             explicit_checkpoint = "checkpoint_file" in self.model_fields_set
@@ -282,11 +302,22 @@ class GenerationRequest(BaseModel):
                     if explicit_checkpoint and self.checkpoint_file is not None
                     else "before_sft"
                 )
-            registration = (
-                load_active_model()
-                if not explicit_checkpoint or "pretrained_config_file" not in self.model_fields_set
-                else None
-            )
+            if self.pretrained_model_id is not None:
+                try:
+                    registration = load_registered_model(self.pretrained_model_id)
+                except RuntimeError as error:
+                    raise ValueError(str(error)) from error
+                if registration is None:
+                    raise ValueError(
+                        f"Модель {self.pretrained_model_id} не зарегистрирована; выполните setup"
+                    )
+            else:
+                registration = (
+                    load_active_model()
+                    if not explicit_checkpoint
+                    or "pretrained_config_file" not in self.model_fields_set
+                    else None
+                )
             if not explicit_checkpoint:
                 self.checkpoint_file = (
                     (
@@ -331,7 +362,7 @@ class GenerationRequest(BaseModel):
     def to_config(self) -> GenerationConfig:
         """Преобразовать параметры запроса во внутреннюю конфигурацию генерации."""
 
-        values = self.model_dump(exclude={"prompt", "checkpoint_name"})
+        values = self.model_dump(exclude={"prompt", "checkpoint_name", "pretrained_model_id"})
         if self.pretrained_mode == "custom_checkpoint":
             if self.checkpoint_file is None or self.checkpoint_name is None:
                 raise ValueError("Для custom_checkpoint нужен checkpoint_name")
@@ -350,10 +381,16 @@ class GenerationResponse(BaseModel):
     token_ids: list[int]
 
 
-class GenerationOptionsResponse(BaseModel):
-    """Доступные pretrained-режимы; проверка не загружает модель или checkpoint."""
+class PretrainedModelOptionsResponse(BaseModel):
+    """Доступность режимов одной зарегистрированной pretrained-модели."""
 
     model_id: str
     before_sft_available: bool
     after_sft_available: bool
     reason: str | None
+
+
+class GenerationOptionsResponse(PretrainedModelOptionsResponse):
+    """Активная модель и каталог выбора; проверка не загружает веса."""
+
+    models: list[PretrainedModelOptionsResponse] = Field(default_factory=list)
