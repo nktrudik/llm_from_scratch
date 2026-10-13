@@ -12,7 +12,7 @@ from mini_llm.pretrained.tokenizer import HuggingFaceDialogueTokenizer
 class ChatTokenizer:
     """Маленький детерминированный tokenizer с явными role/end маркерами."""
 
-    chat_template: str | None = "native-template"
+    chat_template: str | dict[str, str] | None = "native-template"
     bos_token_id = 1
     eos_token_id = 2
     pad_token_id = 0
@@ -83,3 +83,66 @@ def test_tokenizer_without_chat_template_keeps_legacy_prompt() -> None:
         *tokenizer.encode("text"),
         *tokenizer.encode("<ASSISTANT>"),
     ]
+
+
+class ThinkingTokenizer(ChatTokenizer):
+    """Имитировать переключатель reasoning и записывать параметры шаблона."""
+
+    def __init__(self) -> None:
+        self.chat_template = "native-template-with-enable_thinking"
+        self.calls: list[tuple[bool, bool | None]] = []
+
+    def apply_chat_template(
+        self,
+        messages: list[dict[str, str]],
+        *,
+        tokenize: bool,
+        add_generation_prompt: bool,
+        return_dict: bool,
+        enable_thinking: bool | None = None,
+    ) -> list[int]:
+        self.calls.append((add_generation_prompt, enable_thinking))
+        tokens = super().apply_chat_template(
+            messages,
+            tokenize=tokenize,
+            add_generation_prompt=add_generation_prompt,
+            return_dict=return_dict,
+        )
+        if add_generation_prompt and enable_thinking is False:
+            # Пустой think-блок входит в prompt, а не расходует бюджет генерации.
+            tokens.extend([70, 71])
+        return tokens
+
+
+@pytest.mark.parametrize(
+    "template",
+    ["native-enable_thinking", {"default": "native-enable_thinking"}],
+)
+def test_reasoning_is_disabled_in_inference_prompt(template: str | dict[str, str]) -> None:
+    backend = ThinkingTokenizer()
+    backend.chat_template = template
+    tokenizer = HuggingFaceDialogueTokenizer(backend)
+    assert tokenizer.encode_prompt("Привет") == [11, *tokenizer.encode("Привет"), 2, 12, 70, 71]
+    assert backend.calls == [(True, False)]
+
+
+def test_disabling_inference_reasoning_does_not_change_training_window() -> None:
+    backend = ThinkingTokenizer()
+    tokenizer = HuggingFaceDialogueTokenizer(backend)
+    tokenizer.encode_prompt("Привет")
+    backend.calls.clear()
+    sample = DialogueSample("b", 1, ("question",), "answer")
+    window = tokenizer.encode_training_window(sample, max_length=64)
+    expected = HuggingFaceDialogueTokenizer(ChatTokenizer()).encode_training_window(
+        sample, max_length=64
+    )
+    assert window == expected
+    assert backend.calls == [(True, None), (False, None)]
+
+
+def test_unused_reasoning_template_does_not_change_default_template() -> None:
+    backend = ThinkingTokenizer()
+    backend.chat_template = {"default": "native-template", "tool_use": "enable_thinking"}
+    tokenizer = HuggingFaceDialogueTokenizer(backend)
+    assert tokenizer.encode_prompt("text") == [11, *tokenizer.encode("text"), 2, 12]
+    assert backend.calls == [(True, None)]

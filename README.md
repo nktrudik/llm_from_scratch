@@ -35,6 +35,8 @@ uv sync --extra dev --extra pretrained --extra ui
 автоматически не выбирается. Выбор в UI не меняет `artifacts/pretrained/active.json`.
 Без выбора model ID API по-прежнему использует активную модель. Параметры генерации и пути
 берутся из существующих defaults API. История диалога не сохраняется.
+Ответ отображается как plain text с сохранением переносов: `>>post_id`, HTML и Markdown
+не превращаются в цитаты или форматирование.
 
 ---
 
@@ -113,7 +115,10 @@ if (Get-ChildItem -LiteralPath $checkpointDir -Filter "*.pt" -ErrorAction Silent
 LoRA `r=16`, `alpha=32`, `dropout=0.05`, `all-linear`, gradient checkpointing выключен.
 На RTX 3050 4 GB вместимость не гарантируется; скрытого fallback при OOM нет.
 Сохраняются `best.pt`, `last.pt` и periodic checkpoints только в каталоге Qwen3.
-Родной chat template не меняется; Qwen3 может выдавать блоки `<think>`.
+При inference для шаблонов с `enable_thinking` (включая Qwen3) передаётся
+`enable_thinking=False`: reasoning отключён при формировании prompt, а не скрывается
+после генерации. Для моделей без этого переключателя параметры не меняются.
+Training-шаблон, response-only loss и существующие checkpoints остаются прежними.
 
 ### Вариант Б: Обучение кастомной модели с нуля
 Запускается через API (предварительно убедитесь, что датасет разбит и токенизатор обучен):

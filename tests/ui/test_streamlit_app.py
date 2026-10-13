@@ -48,17 +48,13 @@ def test_ui_shows_only_current_exchange(app_test: AppTest, monkeypatch: pytest.M
     app_test.chat_input[0].set_value("Первое сообщение").run()
     assert not app_test.exception
     assert len(app_test.chat_message) == 2
-    assert [block.value for block in app_test.markdown] == [
-        "Первое сообщение",
-        "Ответ: Первое сообщение",
-    ]
+    assert [block.value for block in app_test.markdown] == ["Первое сообщение"]
+    assert [block.value for block in app_test.text] == ["Ответ: Первое сообщение"]
 
     app_test.chat_input[0].set_value("Второе сообщение").run()
     assert len(app_test.chat_message) == 2
-    assert [block.value for block in app_test.markdown] == [
-        "Второе сообщение",
-        "Ответ: Второе сообщение",
-    ]
+    assert [block.value for block in app_test.markdown] == ["Второе сообщение"]
+    assert [block.value for block in app_test.text] == ["Ответ: Второе сообщение"]
     assert calls == [("Первое сообщение", "custom", None), ("Второе сообщение", "custom", None)]
 
 
@@ -294,3 +290,22 @@ def test_ui_handles_empty_model_reply(app_test: AppTest, monkeypatch: pytest.Mon
     app_test.chat_input[0].set_value("Привет").run()
     assert not app_test.exception
     assert app_test.caption[0].value == "Модель вернула пустой ответ."
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [">>123\nОтвет **без Markdown**\n\nВторая строка", "<b>Текст</b> и `код` 😄"],
+)
+def test_ui_displays_model_reply_as_literal_text(
+    app_test: AppTest, monkeypatch: pytest.MonkeyPatch, reply: str
+) -> None:
+    """Ссылки на посты и разметка не должны превращаться в цитаты или HTML."""
+
+    def generate(prompt: str, backend: ModelBackend) -> str:
+        return reply
+
+    monkeypatch.setattr(client, "generate_reply", generate)
+    app_test.chat_input[0].set_value("Вопрос").run()
+    assert not app_test.exception
+    assert [block.value for block in app_test.markdown] == ["Вопрос"]
+    assert [block.value for block in app_test.text] == [reply]

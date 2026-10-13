@@ -90,7 +90,7 @@ def main() -> None:
         return
     with st.chat_message("assistant"):
         if reply:
-            st.markdown(reply)
+            st.text(reply)
         else:
             st.caption("Модель вернула пустой ответ.")
 

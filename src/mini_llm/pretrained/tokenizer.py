@@ -42,6 +42,7 @@ class HuggingFaceTokenizerProtocol(Protocol):
         tokenize: bool,
         add_generation_prompt: bool,
         return_dict: bool,
+        **kwargs: object,
     ) -> object: ...
 
 
@@ -109,10 +110,14 @@ class HuggingFaceDialogueTokenizer:
         return self._eos_id()
 
     def encode_prompt(self, prompt: str) -> list[int]:
-        """Использовать родной chat template, а при его отсутствии — legacy role-формат."""
+        """Отключить thinking в поддерживающем его inference-шаблоне."""
 
         if self.has_chat_template:
-            return self._chat_ids([{"role": "user", "content": prompt}], generation_prompt=True)
+            return self._chat_ids(
+                [{"role": "user", "content": prompt}],
+                generation_prompt=True,
+                disable_thinking=True,
+            )
         return [
             self._bos_id(),
             *self._role_ids(USER_TOKEN),
@@ -132,12 +137,21 @@ class HuggingFaceDialogueTokenizer:
         messages: list[dict[str, str]],
         *,
         generation_prompt: bool,
+        disable_thinking: bool = False,
     ) -> list[int]:
+        template = getattr(self.backend, "chat_template", None)
+        if isinstance(template, dict):
+            template = template.get("default")
+        template_kwargs: dict[str, object] = {}
+        # Training-шаблон остаётся прежним; другим моделям лишний параметр не передаётся.
+        if disable_thinking and isinstance(template, str) and "enable_thinking" in template:
+            template_kwargs["enable_thinking"] = False
         result = self.backend.apply_chat_template(
             messages,
             tokenize=True,
             add_generation_prompt=generation_prompt,
             return_dict=False,
+            **template_kwargs,
         )
 
         if not isinstance(result, list) or not all(

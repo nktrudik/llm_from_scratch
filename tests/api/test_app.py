@@ -89,7 +89,10 @@ def test_generation_swagger_has_separate_backend_examples() -> None:
     assert examples[2]["checkpoint_name"] == "step_00000500.pt"
 
 
-def test_generation_defaults_depend_on_backend() -> None:
+def test_generation_defaults_depend_on_backend(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
     custom = GenerationRequest(prompt="Привет", model_backend="custom").to_config()
     pretrained = GenerationRequest(prompt="Привет", model_backend="pretrained").to_config()
 
