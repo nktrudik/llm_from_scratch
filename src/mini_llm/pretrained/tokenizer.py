@@ -110,13 +110,12 @@ class HuggingFaceDialogueTokenizer:
         return self._eos_id()
 
     def encode_prompt(self, prompt: str) -> list[int]:
-        """Отключить thinking в поддерживающем его inference-шаблоне."""
+        """Использовать тот же non-thinking prompt, что и при обучении."""
 
         if self.has_chat_template:
             return self._chat_ids(
                 [{"role": "user", "content": prompt}],
                 generation_prompt=True,
-                disable_thinking=True,
             )
         return [
             self._bos_id(),
@@ -137,14 +136,13 @@ class HuggingFaceDialogueTokenizer:
         messages: list[dict[str, str]],
         *,
         generation_prompt: bool,
-        disable_thinking: bool = False,
     ) -> list[int]:
         template = getattr(self.backend, "chat_template", None)
         if isinstance(template, dict):
             template = template.get("default")
         template_kwargs: dict[str, object] = {}
-        # Training-шаблон остаётся прежним; другим моделям лишний параметр не передаётся.
-        if disable_thinking and isinstance(template, str) and "enable_thinking" in template:
+        # Одинаковый переключатель при training, validation и inference.
+        if isinstance(template, str) and "enable_thinking" in template:
             template_kwargs["enable_thinking"] = False
         result = self.backend.apply_chat_template(
             messages,
@@ -172,10 +170,9 @@ class HuggingFaceDialogueTokenizer:
         if messages[0]["role"] == "assistant":
             messages.insert(0, {"role": "user", "content": ""})
         while True:
-            selected = messages or [{"role": "user", "content": ""}]
-            prompt_ids = self._chat_ids(selected, generation_prompt=True)
+            prompt_ids = self._chat_ids(messages, generation_prompt=True)
             full_ids = self._chat_ids(
-                [*selected, {"role": "assistant", "content": sample.response}],
+                [*messages, {"role": "assistant", "content": sample.response}],
                 generation_prompt=False,
             )
             if full_ids[: len(prompt_ids)] != prompt_ids:
@@ -184,9 +181,12 @@ class HuggingFaceDialogueTokenizer:
                 )
             if len(full_ids) <= max_length:
                 return EncodedDialogue(full_ids, len(prompt_ids))
-            if not messages:
+            # Старую историю можно сократить, но исходный последний вопрос обязателен.
+            if len(messages) == 1:
                 raise OversizedResponseError(
-                    response_tokens=len(full_ids) - len(prompt_ids), max_length=max_length
+                    response_tokens=len(full_ids) - len(prompt_ids),
+                    max_length=max_length,
+                    required_tokens=len(full_ids),
                 )
             messages.pop(0)
             if messages and messages[0]["role"] == "assistant":
@@ -198,7 +198,7 @@ class HuggingFaceDialogueTokenizer:
         *,
         max_length: int,
     ) -> EncodedDialogue:
-        """Сохранить response и заполнить окно последними context messages."""
+        """Сохранить последний вопрос и полный ответ либо отклонить слишком длинную пару."""
 
         if self.has_chat_template:
             return self._encode_chat_window(sample, max_length)
@@ -220,6 +220,12 @@ class HuggingFaceDialogueTokenizer:
         if len(response_ids) + 1 > max_length:
             raise OversizedResponseError(response_tokens=len(response_ids), max_length=max_length)
         remaining = max_length - len(response_ids) - 1
+        if len(context_segments[-1]) > remaining:
+            raise OversizedResponseError(
+                response_tokens=len(response_ids),
+                max_length=max_length,
+                required_tokens=1 + len(context_segments[-1]) + len(response_ids),
+            )
         selected: list[list[int]] = []
         for segment in reversed(context_segments):
             if len(segment) <= remaining:

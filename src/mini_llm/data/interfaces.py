@@ -17,15 +17,19 @@ class EncodedDialogue:
 
 
 class OversizedResponseError(ValueError):
-    """Response вместе с обязательными special tokens не помещается в окно."""
+    """Ответ или обязательная полная пара не помещается в окно токенов."""
 
-    def __init__(self, *, response_tokens: int, max_length: int) -> None:
+    def __init__(
+        self, *, response_tokens: int, max_length: int, required_tokens: int | None = None
+    ) -> None:
         self.response_tokens = response_tokens
-        self.required_tokens = response_tokens + 1
+        self.required_tokens = response_tokens + 1 if required_tokens is None else required_tokens
         self.max_length = max_length
+        subject = (
+            "Response вместе с BOS" if required_tokens is None else "Полная пара context/response"
+        )
         super().__init__(
-            f"Response требует {self.required_tokens} tokens вместе с BOS, "
-            f"но размер окна равен {max_length}"
+            f"{subject} требует {self.required_tokens} tokens, но размер окна равен {max_length}"
         )
 
 

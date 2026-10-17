@@ -115,10 +115,77 @@ if (Get-ChildItem -LiteralPath $checkpointDir -Filter "*.pt" -ErrorAction Silent
 LoRA `r=16`, `alpha=32`, `dropout=0.05`, `all-linear`, gradient checkpointing выключен.
 На RTX 3050 4 GB вместимость не гарантируется; скрытого fallback при OOM нет.
 Сохраняются `best.pt`, `last.pt` и periodic checkpoints только в каталоге Qwen3.
-При inference для шаблонов с `enable_thinking` (включая Qwen3) передаётся
+При training, validation и inference для шаблонов с `enable_thinking` (включая Qwen3) передаётся
 `enable_thinking=False`: reasoning отключён при формировании prompt, а не скрывается
 после генерации. Для моделей без этого переключателя параметры не меняются.
-Training-шаблон, response-only loss и существующие checkpoints остаются прежними.
+Служебный пустой think-блок входит в prompt и маскируется в loss вместе с вопросом.
+Обучающие targets содержат только ответ и его завершающие токены, без thinking-префикса.
+Сохраняется полный последний user-вопрос и полный ответ: если пара не помещается,
+Dataset пропускает sample при индексации, не меняя JSONL. Более старую историю можно
+сократить, но нельзя удалить последний вопрос ради сохранения ответа.
+Счётчик `oversized_response_count` сохранён для совместимости; теперь он также
+включает пары, слишком длинные из-за вопроса. Custom BPE pipeline не менялся.
+
+### Новый QA-корпус и проверка длины Qwen3
+
+Trainer читает **только** `train.jsonl` и `validation.jsonl` из `--splits-dir`.
+По умолчанию это `data/processed/splits`; появление другого JSONL рядом не переключает
+источник обучения. На момент анализа этот каталог содержит старые splits из
+`2ch_dialogues.jsonl`: 3505/74/59 samples, а не переработанные QA-пары.
+
+Проведён локальный CPU-анализ обоих новых файлов tokenizer-ом
+`Qwen/Qwen3-0.6B`, commit `c1899de289a04d12100db370d81485cdf75e47ca`.
+Считалась полная non-thinking пара без усечения: вопрос, ответ и native special tokens.
+Percentiles рассчитаны методом nearest rank.
+
+| Файл | Samples | P50 | P90 | P95 | P99 | Max | ≤512 | ≤768 | ≤1024 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| `2ch_dialogues_qa_full.jsonl` | 3638 | 127 | 326 | 365 | 414 | 456 | 3638 (100%) | 3638 (100%) | 3638 (100%) |
+| `2ch_dialogues_qa_candidates.jsonl` | 1069 | 159 | 271 | 297 | 351 | 435 | 1069 (100%) | 1069 (100%) | 1069 (100%) |
+
+Рекомендация для RTX 3050 4 GB: оставить `max_sequence_length=512`.
+Увеличение до 768/1024 не добавит ни одного sample из этих файлов и не даёт пользы
+для их размещения. LoRA/QLoRA, batch size, learning rate и optimizer не менялись.
+
+Повторить анализ можно без сети, model weights и GPU:
+
+```powershell
+.\.venv\Scripts\python.exe -m mini_llm.pretrained.length_statistics --pretrained-config configs/pretrained/model--qwen--qwen3-0.6b-qlora.json --input-files data/processed/2ch_dialogues_qa_full.jsonl data/processed/2ch_dialogues_qa_candidates.jsonl --output-file data/processed/reports/qwen3_qa_lengths_non_thinking.json
+```
+
+JSON-отчёт содержит SHA256 исходных файлов. Сам анализ ничего не фильтрует,
+не меняет JSONL и не создаёт splits.
+
+Чтобы выбрать candidates для **нового** SFT, вручную создайте отдельный thread-level
+split; существующие splits не перезаписываются:
+
+```powershell
+$splitDir = "data/processed/splits_qa_candidates"
+if (Test-Path -LiteralPath $splitDir) {
+    throw "Каталог уже существует. Проверьте его содержимое или выберите новый путь."
+}
+.\.venv\Scripts\python.exe -m mini_llm.data.splitting --input-file data/processed/2ch_dialogues_qa_candidates.jsonl --output-dir $splitDir --seed 42
+```
+
+Создаются `train.jsonl`, `validation.jsonl`, `test.jsonl`, `split_stats.json`.
+Разбиение детерминированное по `(board, thread_id)`, без thread leakage.
+Для текущих 37 тредов ожидаются 1036/19/14 samples и 33/1/3 треда: пропорции 90/5/5
+относятся к тредам с целочисленным округлением. Validation из одного треда мала;
+её loss не стоит считать исчерпывающей оценкой качества ответов.
+
+После ручного split передайте trainer **этот же каталог** и отдельный путь checkpoints.
+Это новый SFT-запуск, без resume старого корпуса и старого training-формата:
+
+```powershell
+$checkpointDir = "checkpoints/pretrained/model--qwen--qwen3-0.6b/qlora_qa_candidates"
+if (Test-Path -LiteralPath $checkpointDir) {
+    throw "Каталог уже существует. Выберите новый путь, чтобы сохранить checkpoints."
+}
+.\.venv\Scripts\python.exe -m mini_llm.training --backend pretrained --pretrained-config configs/pretrained/model--qwen--qwen3-0.6b-qlora.json --splits-dir data/processed/splits_qa_candidates --checkpoint-dir $checkpointDir --batch-size 2 --epochs 3 --learning-rate 0.0002 --device cuda
+```
+
+Подготовка split и анализ длин используют CPU/RAM, GPU не требуется.
+Обучение в последней команде использует CUDA и запускается только пользователем.
 
 ### Вариант Б: Обучение кастомной модели с нуля
 Запускается через API (предварительно убедитесь, что датасет разбит и токенизатор обучен):
