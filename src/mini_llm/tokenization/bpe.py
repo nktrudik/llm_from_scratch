@@ -83,13 +83,6 @@ class BPETokenizer:
 
         return self._tokenizer.decode(list(token_ids), skip_special_tokens=skip_special_tokens)
 
-    def encode_context(self, sample: DialogueSample) -> list[int]:
-        """Закодировать context вместе с role tokens."""
-
-        return [
-            token_id for segment in self.encode_context_segments(sample) for token_id in segment
-        ]
-
     def encode_context_segments(self, sample: DialogueSample) -> list[list[int]]:
         """Закодировать context отдельными role-prefixed messages."""
 
@@ -106,15 +99,6 @@ class BPETokenizer:
             self.token_to_id(ASSISTANT_TOKEN),
             *self.encode(sample.response),
             self.token_to_id(EOS_TOKEN),
-        ]
-
-    def encode_dialogue(self, sample: DialogueSample) -> list[int]:
-        """Собрать полный sample в формате BOS + context + response."""
-
-        return [
-            self.token_to_id(BOS_TOKEN),
-            *self.encode_context(sample),
-            *self.encode_response(sample),
         ]
 
     def encode_dialogue_window(
@@ -234,7 +218,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
 
     parser = argparse.ArgumentParser(description="Обучить byte-level BPE на train split.")
     parser.add_argument(
-        "--train-file", type=Path, default=Path("data/processed/splits/train.jsonl")
+        "--train-file", type=Path, default=Path("data/datasets/2ch/v3/splits/train.jsonl")
     )
     parser.add_argument("--output-file", type=Path, default=DEFAULT_TOKENIZER_PATH)
     parser.add_argument("--vocab-size", type=int, default=8192)

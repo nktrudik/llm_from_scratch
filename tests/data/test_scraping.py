@@ -123,7 +123,7 @@ def test_board_limit_counts_only_new_threads(tmp_path: Path) -> None:
         third_thread_url: thread_payload(50),
     }
     config = ScraperConfig(output_dir=tmp_path)
-    existing_path = tmp_path / "2ch" / "b" / "200.json"
+    existing_path = tmp_path / "2ch" / "threads" / "b" / "200.json"
     existing_path.parent.mkdir(parents=True)
     existing_path.write_text('{"immutable": true}\n', encoding="utf-8")
 
@@ -132,8 +132,8 @@ def test_board_limit_counts_only_new_threads(tmp_path: Path) -> None:
 
     assert scraper.requested_urls == [catalog_url, second_thread_url, third_thread_url]
     assert output_paths == [
-        tmp_path / "2ch" / "b" / "100.json",
-        tmp_path / "2ch" / "b" / "50.json",
+        tmp_path / "2ch" / "threads" / "b" / "100.json",
+        tmp_path / "2ch" / "threads" / "b" / "50.json",
     ]
     assert existing_path.read_text(encoding="utf-8") == '{"immutable": true}\n'
     payload = cast(dict[str, object], json.loads(output_paths[0].read_text(encoding="utf-8")))
@@ -150,12 +150,12 @@ def test_thread_url_uses_json_endpoint_without_catalog(tmp_path: Path) -> None:
 
     assert scraper.requested_urls == [api_url]
     assert output_paths[0].name == "777.json"
-    assert output_paths[0].parent == tmp_path / "2ch" / "b"
+    assert output_paths[0].parent == tmp_path / "2ch" / "threads" / "b"
 
 
 def test_existing_thread_url_is_not_downloaded_or_overwritten(tmp_path: Path) -> None:
     config = ScraperConfig(output_dir=tmp_path)
-    existing_path = tmp_path / "2ch" / "b" / "777.json"
+    existing_path = tmp_path / "2ch" / "threads" / "b" / "777.json"
     existing_path.parent.mkdir(parents=True)
     existing_path.write_text("original\n", encoding="utf-8")
 

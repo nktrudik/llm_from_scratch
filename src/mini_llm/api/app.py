@@ -34,8 +34,20 @@ from mini_llm.api.services import (
     run_training,
 )
 from mini_llm.inference import clear_pretrained_cache, generate_response
+from mini_llm.inference.experiments import list_experiments
 from mini_llm.inference.options import pretrained_generation_options
+from mini_llm.modeling.config import ModelConfig
+from mini_llm.observability.training import read_training_progress
+from mini_llm.pretrained.config import PretrainedConfig
 from mini_llm.pretrained.workspace import list_registered_models
+from mini_llm.workspace.catalog import list_runs
+from mini_llm.workspace.discovery import dataset_catalog
+from mini_llm.workspace.training import (
+    ManagedTrainingRequest,
+    prepare_version_splits,
+    run_managed_training,
+    validate_training_request,
+)
 
 app = FastAPI(
     title="mini_llm local control API",
@@ -43,6 +55,74 @@ app = FastAPI(
     version="0.1.0",
 )
 job_manager = JobManager()
+
+
+@app.get("/v1/workspace")
+def workspace_catalog(refresh_datasets: bool = True) -> dict[str, object]:
+    """Обновить версии по запросу; считать samples только у новых папок, без загрузки весов."""
+
+    datasets, warnings = dataset_catalog(refresh=refresh_datasets)
+    models: list[dict[str, object]] = [
+        {
+            "model_id": "custom",
+            "max_sequence_length": ModelConfig().max_sequence_length,
+            "adaptation_mode": "full",
+        }
+    ]
+    for registration in list_registered_models():
+        config = PretrainedConfig.load(registration.config_file)
+        models.append(
+            {
+                "model_id": registration.model_id,
+                "max_sequence_length": config.max_sequence_length,
+                "adaptation_mode": config.adaptation_mode,
+            }
+        )
+    return {
+        "datasets": [{**item.model_dump(), "splits_ready": item.splits_ready} for item in datasets],
+        "dataset_count": len(datasets),
+        "total_samples": sum(item.samples for item in datasets),
+        "dataset_warnings": warnings,
+        "models": models,
+        "runs": [item.model_dump(mode="json") for item in list_runs()],
+        "active_job_id": job_manager.active_job_id(),
+    }
+
+
+@app.post("/v1/workspace/training", response_model=JobResponse, status_code=202)
+def start_versioned_training(
+    request: ManagedTrainingRequest, background_tasks: BackgroundTasks
+) -> JobResponse:
+    """Запустить обучение по версиям, сохранив существующие запуски."""
+
+    try:
+        validate_training_request(request)
+    except (OSError, ValueError, RuntimeError) as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    try:
+        record = job_manager.create("training")
+    except JobAlreadyRunningError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    clear_pretrained_cache()
+    background_tasks.add_task(
+        job_manager.run, record.job_id, lambda: run_managed_training(request, record.job_id)
+    )
+    return JobResponse.model_validate(record.to_dict())
+
+
+@app.post(
+    "/v1/workspace/datasets/{dataset_id}/{version}/split",
+    response_model=JobResponse,
+    status_code=202,
+)
+def start_versioned_split(
+    dataset_id: str, version: str, background_tasks: BackgroundTasks
+) -> JobResponse:
+    """Явно подготовить splits версии, не изменяя другие версии."""
+
+    return _submit_job(
+        "dataset_split", background_tasks, lambda: prepare_version_splits(dataset_id, version)
+    )
 
 
 def _submit_job(
@@ -74,6 +154,10 @@ def get_job(job_id: str) -> JobResponse:
     snapshot = job_manager.get(job_id)
     if snapshot is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Задача не найдена")
+    if snapshot.get("kind") == "training":
+        run = next((item for item in list_runs() if item.job_id == job_id), None)
+        if run:
+            snapshot["progress"] = read_training_progress(run.directory)
     return JobResponse.model_validate(snapshot)
 
 
@@ -199,6 +283,10 @@ def generation_options() -> GenerationOptionsResponse:
             for item in availability.experiments
         ],
         models=models,
+        custom_runs=[
+            ExperimentOptionsResponse.model_validate(asdict(item))
+            for item in list_experiments(None)
+        ],
     )
 
 

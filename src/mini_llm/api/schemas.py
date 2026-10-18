@@ -20,10 +20,12 @@ from mini_llm.inference.config import (
 )
 from mini_llm.inference.experiments import experiment_directory, resolve_experiment_checkpoint
 from mini_llm.modeling.config import DEFAULT_MAX_SEQUENCE_LENGTH
+from mini_llm.observability.training import TrainingProgress
 from mini_llm.pretrained import PretrainedConfig
 from mini_llm.pretrained.workspace import load_active_model, load_registered_model
 from mini_llm.tokenization.config import DEFAULT_TOKENIZER_PATH
 from mini_llm.training import PretrainedTrainingConfig, TrainingConfig
+from mini_llm.workspace.catalog import get_run
 
 
 class HealthResponse(BaseModel):
@@ -44,17 +46,18 @@ class JobResponse(BaseModel):
     finished_at: str | None = None
     result: object | None = None
     error: str | None = None
+    progress: TrainingProgress | None = None
 
 
 class TrainingRequest(BaseModel):
     """Параметры запуска полного обучения."""
 
-    splits_dir: Path = Field(default_factory=lambda: Path("data/processed/splits"))
+    splits_dir: Path = Field(default_factory=lambda: Path("data/datasets/2ch/v3/splits"))
     tokenizer_file: Path = Field(default_factory=lambda: DEFAULT_TOKENIZER_PATH)
     token_statistics_file: Path = Field(
-        default_factory=lambda: Path("data/processed/token_statistics.json")
+        default_factory=lambda: Path("data/datasets/2ch/v3/reports/token_statistics.json")
     )
-    checkpoint_dir: Path = Field(default_factory=lambda: Path("checkpoints/training"))
+    checkpoint_dir: Path = Field(default_factory=lambda: Path("checkpoints/unmanaged/custom"))
     resume_from: Path | None = None
     model_backend: str = Field(default="custom", pattern="^(custom|pretrained)$")
     pretrained_config_file: Path | None = None
@@ -129,7 +132,7 @@ class PretrainedPrepareRequest(BaseModel):
     qlora_quant_type: str = Field(default="nf4", pattern="^(nf4|fp4)$")
     qlora_double_quant: bool = True
     device_map: str | None = None
-    output_config: Path = Field(default_factory=lambda: Path("configs/pretrained/model.json"))
+    output_config: Path = Field(default_factory=lambda: Path("configs/models/model.json"))
 
     @model_validator(mode="after")
     def apply_qlora_defaults(self) -> Self:
@@ -151,7 +154,9 @@ class PretrainedPrepareRequest(BaseModel):
 class TokenizerTrainingRequest(BaseModel):
     """Параметры обучения BPE tokenizer."""
 
-    train_file: Path = Field(default_factory=lambda: Path("data/processed/splits/train.jsonl"))
+    train_file: Path = Field(
+        default_factory=lambda: Path("data/datasets/2ch/v3/splits/train.jsonl")
+    )
     output_file: Path = Field(default_factory=lambda: DEFAULT_TOKENIZER_PATH)
     vocab_size: int = Field(default=8192, ge=262)
     min_frequency: int = Field(default=2, ge=1)
@@ -160,9 +165,9 @@ class TokenizerTrainingRequest(BaseModel):
 class PreprocessingRequest(BaseModel):
     """Параметры preprocessing raw-тредов."""
 
-    input_dir: Path = Field(default_factory=lambda: Path("data/raw/2ch"))
+    input_dir: Path = Field(default_factory=lambda: Path("data/sources/2ch/threads"))
     source_format: Literal["posts", "sft"] = "posts"
-    output_dir: Path = Field(default_factory=lambda: Path("data/processed"))
+    output_dir: Path = Field(default_factory=lambda: Path("data/staging/2ch"))
     review_size: int = Field(default=100, ge=0)
     random_seed: int = 42
     dedup_min_characters: int = Field(default=80, ge=1)
@@ -173,7 +178,7 @@ class PreprocessingRequest(BaseModel):
         """Выбрать каталог очищенного SFT только для явно выбранного режима."""
 
         if self.source_format == "sft" and "input_dir" not in self.model_fields_set:
-            self.input_dir = Path("data/raw/2ch_clean")
+            self.input_dir = Path("data/sources/2ch/sft-pairs")
         return self
 
     def to_config(self) -> PreprocessingConfig:
@@ -185,17 +190,19 @@ class PreprocessingRequest(BaseModel):
 class DatasetSplitRequest(BaseModel):
     """Параметры детерминированного split по тредам."""
 
-    input_file: Path = Field(default_factory=lambda: Path("data/processed/2ch_dialogues.jsonl"))
-    output_dir: Path = Field(default_factory=lambda: Path("data/processed/splits"))
+    input_file: Path = Field(default_factory=lambda: Path("data/datasets/2ch/v3/samples.jsonl"))
+    output_dir: Path = Field(default_factory=lambda: Path("data/datasets/2ch/v3/splits"))
     random_seed: int = 42
 
 
 class TokenStatisticsRequest(BaseModel):
     """Параметры подсчёта token statistics."""
 
-    splits_dir: Path = Field(default_factory=lambda: Path("data/processed/splits"))
+    splits_dir: Path = Field(default_factory=lambda: Path("data/datasets/2ch/v3/splits"))
     tokenizer_file: Path = Field(default_factory=lambda: DEFAULT_TOKENIZER_PATH)
-    output_file: Path = Field(default_factory=lambda: Path("data/processed/token_statistics.json"))
+    output_file: Path = Field(
+        default_factory=lambda: Path("data/datasets/2ch/v3/reports/token_statistics.json")
+    )
     max_sequence_length: int = Field(default=DEFAULT_MAX_SEQUENCE_LENGTH, ge=1)
 
 
@@ -203,7 +210,7 @@ class ScrapeRequest(BaseModel):
     """Параметры последовательного сбора тредов 2ch."""
 
     url: str
-    output_dir: Path = Field(default_factory=lambda: Path("data/raw"))
+    output_dir: Path = Field(default_factory=lambda: Path("data/sources"))
     max_threads: int | None = Field(default=None, ge=1)
     timeout_seconds: float = Field(default=15.0, gt=0)
     max_retries: int = Field(default=2, ge=0)
@@ -238,7 +245,7 @@ class GenerationRequest(BaseModel):
     )
     experiment_id: str | None = Field(
         default=None,
-        description="Имя запуска внутри checkpoints/experiments; только для custom_checkpoint",
+        description="Имя запуска внутри checkpoints/runs; только для custom_checkpoint",
     )
     device: str = "cuda"
     max_new_tokens: int = Field(default=256, ge=0)
@@ -270,7 +277,7 @@ class GenerationRequest(BaseModel):
                     "prompt": "Привет! Как у тебя дела?",
                     "pretrained_mode": "custom_checkpoint",
                     "checkpoint_name": "step_00000500.pt",
-                    "experiment_id": "qwen3_qa_epoch1_v2",
+                    "experiment_id": "model--qwen--qwen3-0.6b--2ch-v3--run-003",
                     "pretrained_model_id": "Qwen/Qwen3-0.6B",
                 },
             ]
@@ -281,6 +288,25 @@ class GenerationRequest(BaseModel):
     def validate_backend_files(self) -> Self:
         """Подставить defaults выбранного backend и проверить обязательные файлы."""
 
+        if self.experiment_id is not None and self.model_backend == "custom":
+            run = get_run(self.experiment_id)
+            if run is None or run.model_id != "custom":
+                raise ValueError("experiment_id Custom не найден")
+            if self.pretrained_mode is not None:
+                raise ValueError("pretrained_mode не применяется к Custom")
+            if {
+                "checkpoint_file",
+                "tokenizer_file",
+                "pretrained_config_file",
+                "pretrained_model_id",
+            } & self.model_fields_set:
+                raise ValueError("Для версии Custom пути берутся из run.json")
+            self.checkpoint_name = validate_checkpoint_name(self.checkpoint_name or "last.pt")
+            self.checkpoint_file = experiment_directory(self.experiment_id) / self.checkpoint_name
+            self.tokenizer_file = run.tokenizer_file
+            if self.tokenizer_file is None:
+                raise ValueError("У запуска не указан tokenizer_file")
+            return self
         if self.experiment_id is not None:
             if self.model_backend != "pretrained" or self.pretrained_mode != "custom_checkpoint":
                 raise ValueError("experiment_id допустим только для custom_checkpoint pretrained")
@@ -355,6 +381,13 @@ class GenerationRequest(BaseModel):
                 )
             if "tokenizer_file" not in self.model_fields_set:
                 self.tokenizer_file = None
+            if self.experiment_id is not None:
+                run = get_run(self.experiment_id)
+                if run is not None:
+                    expected_model = registration.model_id if registration else None
+                    if run.model_id != expected_model or run.pretrained_config_file is None:
+                        raise ValueError("Запуск не соответствует выбранной модели")
+                    self.pretrained_config_file = run.pretrained_config_file
         if self.model_backend == "custom" and self.tokenizer_file is None:
             raise ValueError("Для custom backend нужен tokenizer_file")
         if self.model_backend == "pretrained" and self.pretrained_config_file is None:
@@ -379,6 +412,10 @@ class GenerationRequest(BaseModel):
         values = self.model_dump(
             exclude={"prompt", "checkpoint_name", "pretrained_model_id", "experiment_id"}
         )
+        if self.model_backend == "custom" and self.experiment_id is not None:
+            values["checkpoint_file"] = resolve_named_checkpoint(
+                experiment_directory(self.experiment_id), self.checkpoint_name or "last.pt"
+            )
         if self.pretrained_mode == "custom_checkpoint":
             if self.checkpoint_file is None or self.checkpoint_name is None:
                 raise ValueError("Для custom_checkpoint нужен checkpoint_name")
@@ -410,7 +447,7 @@ class ExperimentCheckpointResponse(BaseModel):
     """Checkpoint с номером шага и сохранённым validation loss."""
 
     name: str
-    global_step: int
+    global_step: int | None
     validation_loss: float | None = None
 
 
@@ -419,6 +456,8 @@ class ExperimentOptionsResponse(BaseModel):
 
     experiment_id: str
     checkpoints: list[ExperimentCheckpointResponse]
+    title: str = ""
+    directory: str = ""
 
 
 class PretrainedModelOptionsResponse(BaseModel):
@@ -435,3 +474,4 @@ class GenerationOptionsResponse(PretrainedModelOptionsResponse):
     """Активная модель и каталог выбора; проверка не загружает веса."""
 
     models: list[PretrainedModelOptionsResponse] = Field(default_factory=list)
+    custom_runs: list[ExperimentOptionsResponse] = Field(default_factory=list)

@@ -9,7 +9,7 @@ from typing import Literal
 from mini_llm.pretrained.workspace import DEFAULT_MODEL_ID, ModelPaths
 from mini_llm.tokenization.config import DEFAULT_TOKENIZER_PATH
 
-DEFAULT_CUSTOM_CHECKPOINT_PATH = Path("checkpoints/training/best.pt")
+DEFAULT_CUSTOM_CHECKPOINT_PATH = Path("checkpoints/runs/custom/legacy/v0/run-001/best.pt")
 DEFAULT_PRETRAINED_CHECKPOINT_PATH = (
     ModelPaths.for_model(DEFAULT_MODEL_ID).checkpoint_dir / "best.pt"
 )

@@ -1,293 +1,90 @@
-# Mini LLM
+# Mini LLM / НейроДвач
 
-Проект для создания YouTube-видео и практических экспериментов с Large Language Models. Содержит полный локальный пайплайн: от парсинга данных (2ch) и препроцессинга до обучения собственной модели с нуля на PyTorch и файнтюнинга готовых open-source моделей (LoRA/QLoRA). 
+Локальный учебный проект: собственный Transformer и fine-tuning Hugging Face моделей
+(full / LoRA / QLoRA), FastAPI и Streamlit. Интерфейс: **Чат** и **Обучение**.
+Response-only loss, non-thinking chat template, checkpoints/resume, AMP и GPU telemetry.
+Custom: 4 блока, d_model=256, 4 heads, FFN=1024, vocab=8192, tied embeddings, context=1024.
 
-Управление этапами происходит через локальный HTTP API (FastAPI), а тестирование ответов — через веб-интерфейс на Streamlit.
-
-## 🚀 Быстрый старт (Установка и Запуск)
-
-Проект использует `uv` для управления зависимостями. Требуется Python 3.13+.
-
-**1. Установка всех зависимостей (включая UI и Hugging Face):**
-```powershell
-uv sync --extra dev --extra pretrained --extra ui
-```
-
-**2. Запуск локального API-сервера:**
-```powershell
-.\.venv\Scripts\uvicorn.exe mini_llm.main:app --host 127.0.0.1 --port 8000
-```
-*Swagger UI с документацией всех эндпоинтов доступен по адресу: http://127.0.0.1:8000/docs*
-
-**3. Запуск веб-интерфейса (чат):**
-Откройте новый терминал и выполните:
-```powershell
-.\.venv\Scripts\python.exe -m streamlit run src/mini_llm/ui/app.py --server.address 127.0.0.1 --server.port 8501
-```
-
-Чат доступен по адресу http://127.0.0.1:8501. Можно выбрать `Custom` или `Qwen`.
-Для Qwen появляется второй выпадающий список с зарегистрированными model ID,
-например `Qwen/Qwen2.5-0.5B-Instruct` и `Qwen/Qwen3-0.6B` после их setup.
-Если есть совместимые запуски в `checkpoints/experiments/<experiment_id>/`, UI по умолчанию
-выбирает «После SFT — эксперимент». Появляются списки **Эксперимент** и **Checkpoint**:
-вводить путь или имя файла вручную не нужно. Более свежий по времени сохранения запуск
-показывается первым, а внутри него по умолчанию выбирается `last.pt`. Для сравнения
-можно выбрать `best.pt` или любой доступный periodic checkpoint. Номер шага, точный
-относительный путь и сохранённый validation loss показаны рядом с выбором.
-Новый запуск обнаруживается после обновления страницы без изменения регистрации.
-
-На момент проверки самый свежий запуск — `qwen3_qa_epoch1_v2`:
-`last.pt` содержит step 1036, `best.pt` — step 600. `last` означает последнюю сохранённую
-версию весов, а `best` — минимум validation loss, поэтому их шаги могут отличаться.
-Режим «До SFT — исходная модель» загружает базовую модель без checkpoint.
-
-В списке показываются только checkpoints с совпадающими model ID, revision и полным
-pretrained-конфигом (включая режим адаптации и LoRA-параметры). Повреждённые, пустые
-и незавершённые файлы пропускаются. Метаданные читаются через безопасный
-`torch.load(weights_only=True, mmap=True, map_location="cpu")` и кэшируются по пути,
-размеру и времени изменения файла; веса не копируются в GPU для построения списка.
-Смена модели/checkpoint сохраняет прежнюю логику кэша inference: один выбранный backend
-в памяти, без повторной загрузки на каждый ответ.
-
-Если совместимых экспериментов нет, сохраняются прежние режимы «После SFT — best checkpoint»
-и «Свой чекпоинт» в каталоге зарегистрированной модели. UI явно сообщает об этом.
-Выбор в UI не меняет `artifacts/pretrained/active.json`, не копирует и не перезаписывает веса.
-Без выбора model ID API по-прежнему использует активную модель. Параметры генерации и пути
-берутся из существующих defaults API. История диалога не сохраняется.
-Ответ отображается как plain text с сохранением переносов: `>>post_id`, HTML и Markdown
-не превращаются в цитаты или форматирование.
-
-Если UI сообщает об ошибке соединения, проверьте API из терминала:
-
-```powershell
-Invoke-RestMethod http://127.0.0.1:8000/health
-```
-
-По умолчанию UI обращается к `http://127.0.0.1:8000`. Для другого адреса задайте
-`MINI_LLM_API_URL` **в терминале UI до запуска Streamlit**. После изменения адреса
-перезапустите UI. Пример явного подключения к локальному backend:
-
-```powershell
-$env:MINI_LLM_API_URL = "http://127.0.0.1:8000"
-.\.venv\Scripts\python.exe -m streamlit run src/mini_llm/ui/app.py --server.address 127.0.0.1 --server.port 8501
-```
-
-Локальные запросы (`localhost`, loopback IPv4/IPv6) обходят системный proxy;
-для удалённого API настройки окружения сохраняются. Для первого чтения каталога
-checkpoints отведено 120 секунд, для генерации — 600 секунд. UI отдельно показывает
-ошибку подключения, таймаут соединения, таймаут чтения каталога и HTTP-ошибку сервера,
-а не считает любую задержку признаком выключенного backend. Запросы автоматически
-не повторяются.
-
----
-
-## 🛠 Пайплайн данных
-
-Все долгие операции выполняются асинхронно через API или CLI.
-
-**1. Сбор данных (Scraper):**
-```powershell
-# Пример сбора новых тредов с доски
-$body = @{ url = "https://2ch.org/b/"; max_threads = 10 } | ConvertTo-Json
-Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:8000/v1/scraper" -ContentType "application/json" -Body $body
-```
-
-**2. Препроцессинг и очистка датасета:**
-```powershell
-.\.venv\Scripts\python.exe -m mini_llm.data.preprocessing --source-format sft --input-dir data/raw/2ch_clean --output-dir data/processed --review-size 100 --seed 42
-```
-
-**3. Разбиение датасета (Train / Validation / Test):**
-```powershell
-Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:8000/v1/dataset/split" -ContentType "application/json" -Body "{}"
-```
-
-**4. Обучение собственного BPE токенизатора:**
-```powershell
-Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:8000/v1/tokenizer/train" -ContentType "application/json" -Body "{}"
-```
-
----
-
-## 🧠 Обучение моделей (Train & Fine-Tuning)
-
-### Вариант А: Дообучение готовой модели (QLoRA)
-Загрузка весов с Hugging Face, подготовка конфигов и запуск обучения одной командой.
-
-```powershell
-.\.venv\Scripts\python.exe -m mini_llm.pretrained setup "Qwen/Qwen2.5-0.5B-Instruct" --train --dtype bfloat16 --batch-size 2 --epochs 3 --learning-rate 0.0002
-```
-*Доступные режимы адаптации (`--mode`): `qlora` (по умолчанию), `lora`, `full`.*
-
-### Qwen3-0.6B: отдельная загрузка и SFT
-
-Остановите API/UI перед синхронизацией окружения и освободите GPU перед обучением.
-Все команды ниже выполняются вручную из корня проекта.
+## Установка и запуск (PowerShell, из корня проекта)
 
 ```powershell
 uv sync --extra dev --extra pretrained --extra ui
-.\.venv\Scripts\python.exe -m mini_llm.pretrained setup "Qwen/Qwen3-0.6B" --mode qlora --dtype bfloat16 --max-sequence-length 512 --no-gradient-checkpointing
+# Терминал 1: один процесс API, без --reload во время обучения.
+.\.venv\Scripts\python.exe -m uvicorn mini_llm.main:app --host 127.0.0.1 --port 8000
+# Терминал 2:
+.\.venv\Scripts\python.exe -m streamlit run src/mini_llm/ui/app.py --server.address 127.0.0.1 --server.port 8501
 ```
 
-Setup скачивает модель и её tokenizer, закрепляет фактический commit и создаёт:
+UI: http://127.0.0.1:8501 · Swagger: http://127.0.0.1:8000/docs.
+Другой API: задайте `$env:MINI_LLM_API_URL="http://127.0.0.1:8000"` перед запуском UI.
+В чате выберите модель → версию/запуск → checkpoint. До SFT используется базовая модель.
+Во вкладке обучения выберите датасет, модель, параметры и нажмите «Запустить обучение».
+Новая папка `data/datasets/<id>/vN/samples.jsonl` обнаруживается при открытии страницы
+или по кнопке «Обновить список датасетов». Backend сохраняет количество samples и SHA256
+в `dataset.json`; JSONL и существующие splits не меняются. Фонового обновления каталога нет.
+Открытие страницы не запускает обучение. Статус — в UI, подробный progress — в терминале API.
+После старта UI обновляет шаги, эпоху, loss, график и приблизительный ETA каждые 2 секунды.
+Метрики пишутся в `progress.json` отдельно от checkpoints; ETA уточняется после первых шагов.
+Одновременно выполняется только одна тяжёлая задача; генерация на это время блокируется.
+Закрытие браузера не останавливает обучение. Не останавливайте API до сохранения checkpoint.
 
-- `.cache/huggingface/models--Qwen--Qwen3-0.6B/` — cache Hugging Face;
-- `configs/pretrained/model--qwen--qwen3-0.6b-qlora.json` — конфиг;
-- `artifacts/pretrained/model--qwen--qwen3-0.6b/qlora.json` — регистрация;
-- `checkpoints/pretrained/model--qwen--qwen3-0.6b/qlora/` — каталог адаптеров;
-- `artifacts/pretrained/active.json` — указатель на последнюю подготовленную модель.
+## Данные и версии моделей
 
-Файлы Qwen2.5 остаются в своих каталогах. Setup не запускает обучение и не загружает
-веса в GPU. После setup обе модели доступны в списке UI; best проверяется отдельно.
-Для одного model ID используется активный режим адаптации, если модель активна,
-иначе приоритет регистрации — QLoRA, LoRA, full.
-
-Это **SFT/fine-tuning**, а не pretraining с нуля. Запуск на существующих split JSONL:
-
-```powershell
-$checkpointDir = "checkpoints/pretrained/model--qwen--qwen3-0.6b/qlora"
-if (Get-ChildItem -LiteralPath $checkpointDir -Filter "*.pt" -ErrorAction SilentlyContinue) {
-    throw "В каталоге уже есть checkpoints. Используйте resume или отдельный каталог запуска."
-}
-.\.venv\Scripts\python.exe -m mini_llm.training --backend pretrained --pretrained-config configs/pretrained/model--qwen--qwen3-0.6b-qlora.json --splits-dir data/processed/splits --checkpoint-dir $checkpointDir --device cuda --batch-size 2 --epochs 3 --learning-rate 0.0002 --weight-decay 0.01 --gradient-clip-norm 1.0 --max-train-samples 30000 --max-validation-samples 1000 --num-workers 2 --log-interval 100 --validation-interval 500 --validation-batches 50 --checkpoint-interval 500 --seed 42
+```text
+data/sources/2ch/{threads,sft-pairs}/          исходники, не изменяются
+data/staging/2ch/                            результат preprocessing до публикации
+data/datasets/2ch/vN/                        dataset.json, samples.jsonl, splits/, reports/
+checkpoints/runs/<model>/2ch/vN/run-NNN/      run.json, pretrained.json, *.pt
+configs/models/<model>/<mode>.json          профиль base model
+configs/training/qlora-qa.json               стартовые параметры обучения
+artifacts/models/                           регистрации скачанных моделей
+artifacts/tokenizers/custom-bpe/v1/          сохранённый собственный tokenizer
+.cache/huggingface/                          неизменённый HF cache
+data/archive/, checkpoints/archive/         исторические данные и остатки
 ```
 
-Профиль сохраняет BF16, NF4 + double quantization, AdamW8bit, окно 512,
-LoRA `r=16`, `alpha=32`, `dropout=0.05`, `all-linear`, gradient checkpointing выключен.
-На RTX 3050 4 GB вместимость не гарантируется; скрытого fallback при OOM нет.
-Сохраняются `best.pt`, `last.pt` и periodic checkpoints только в каталоге Qwen3.
-При training, validation и inference для шаблонов с `enable_thinking` (включая Qwen3) передаётся
-`enable_thinking=False`: reasoning отключён при формировании prompt, а не скрывается
-после генерации. Для моделей без этого переключателя параметры не меняются.
-Служебный пустой think-блок входит в prompt и маскируется в loss вместе с вопросом.
-Обучающие targets содержат только ответ и его завершающие токены, без thinking-префикса.
-Сохраняется полный последний user-вопрос и полный ответ: если пара не помещается,
-Dataset пропускает sample при индексации, не меняя JSONL. Более старую историю можно
-сократить, но нельзя удалить последний вопрос ради сохранения ответа.
-Счётчик `oversized_response_count` сохранён для совместимости; теперь он также
-включает пары, слишком длинные из-за вопроса. Custom BPE pipeline не менялся.
+Версии 2ch: **v1** — исходные SFT-пары (3638), **v2** — QA Full (3638),
+**v3** — QA Candidates (1069; train/validation/test: 1036/19/14).
+Неизвестное происхождение старых моделей обозначено `legacy/v0`.
+Каждый запуск, включая resume, получает новый `run-NNN`: прежние веса не перезаписываются.
+`run.json` связывает модель, данные, параметры, родительский запуск и SHA256 splits.
+Миграция старой структуры выполняется один раз: `python -m mini_llm.workspace migrate`.
+Она переносит файлы без изменения JSONL/.pt; журнал: `data/archive/layout-migration.json`.
+Исторические пути внутри .pt оставлены нетронутыми; старые команды с путями нужно обновить.
 
-### Новый QA-корпус и проверка длины Qwen3
-
-Trainer читает **только** `train.jsonl` и `validation.jsonl` из `--splits-dir`.
-По умолчанию это `data/processed/splits`; появление другого JSONL рядом не переключает
-источник обучения. На момент анализа этот каталог содержит старые splits из
-`2ch_dialogues.jsonl`: 3505/74/59 samples, а не переработанные QA-пары.
-
-Проведён локальный CPU-анализ обоих новых файлов tokenizer-ом
-`Qwen/Qwen3-0.6B`, commit `c1899de289a04d12100db370d81485cdf75e47ca`.
-Считалась полная non-thinking пара без усечения: вопрос, ответ и native special tokens.
-Percentiles рассчитаны методом nearest rank.
-
-| Файл | Samples | P50 | P90 | P95 | P99 | Max | ≤512 | ≤768 | ≤1024 |
-|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| `2ch_dialogues_qa_full.jsonl` | 3638 | 127 | 326 | 365 | 414 | 456 | 3638 (100%) | 3638 (100%) | 3638 (100%) |
-| `2ch_dialogues_qa_candidates.jsonl` | 1069 | 159 | 271 | 297 | 351 | 435 | 1069 (100%) | 1069 (100%) | 1069 (100%) |
-
-Рекомендация для RTX 3050 4 GB: оставить `max_sequence_length=512`.
-Увеличение до 768/1024 не добавит ни одного sample из этих файлов и не даёт пользы
-для их размещения. LoRA/QLoRA, batch size, learning rate и optimizer не менялись.
-
-Повторить анализ можно без сети, model weights и GPU:
+## Подготовка и ручной запуск
 
 ```powershell
-.\.venv\Scripts\python.exe -m mini_llm.pretrained.length_statistics --pretrained-config configs/pretrained/model--qwen--qwen3-0.6b-qlora.json --input-files data/processed/2ch_dialogues_qa_full.jsonl data/processed/2ch_dialogues_qa_candidates.jsonl --output-file data/processed/reports/qwen3_qa_lengths_non_thinking.json
+# Setup скачивает модель и tokenizer; обучение не запускается.
+.\.venv\Scripts\python.exe -m mini_llm.pretrained setup "Qwen/Qwen3-0.6B"
+# SFT preprocessing использует только *_sft_raw.json и сохраняет staging.
+.\.venv\Scripts\python.exe -m mini_llm.data.preprocessing --source-format sft
+# Публикация копирует JSONL без изменения текста; v4 — пример нового корпуса.
+.\.venv\Scripts\python.exe -m mini_llm.workspace publish data/staging/2ch/2ch_dialogues.jsonl --dataset 2ch --version v4 --title "Новые QA-пары"
+.\.venv\Scripts\python.exe -m mini_llm.workspace split --dataset 2ch --version v4
+.\.venv\Scripts\python.exe -m mini_llm.workspace list
+# Альтернатива кнопке UI: обучение v3, всегда в новом каталоге.
+.\.venv\Scripts\python.exe -m mini_llm.workspace train --dataset 2ch --version v3 --model "Qwen/Qwen3-0.6B" --parameters configs/training/qlora-qa.json
 ```
 
-JSON-отчёт содержит SHA256 исходных файлов. Сам анализ ничего не фильтрует,
-не меняет JSONL и не создаёт splits.
+Resume: добавьте `--resume-run "<run_id из workspace list>" --checkpoint last.pt`;
+увеличьте общий epochs/max_steps в JSON параметров. Модель, версия, batch и seed сохраняются.
+Split — детерминированный 90/5/5 по тредам; существующие версии/splits не заменяются.
+QLoRA: BF16, NF4+double quant, r=16, alpha=32, dropout=0.05, all-linear;
+пример: batch=2, seq=512, LR=3e-5, AdamW8bit, workers=2, без gradient checkpointing.
+Скрытого fallback при BF16/OOM нет. QLoRA требует совместимую CUDA GPU.
+Preprocessing/split/BPE используют CPU/RAM; обучение и генерация по умолчанию — CUDA.
+Scraper, BPE и token statistics доступны через Swagger; автоматически не запускаются.
+Код в `src/mini_llm/`: data, modeling, pretrained, tokenization, training,
+inference, workspace, api, ui, observability. Нет distributed training и dataset packing.
+Обычные CLI/API training тоже создают новый run; явный checkpoint-dir оставлен для совместимости.
 
-Чтобы выбрать candidates для **нового** SFT, вручную создайте отдельный thread-level
-split; существующие splits не перезаписываются:
-
-```powershell
-$splitDir = "data/processed/splits_qa_candidates"
-if (Test-Path -LiteralPath $splitDir) {
-    throw "Каталог уже существует. Проверьте его содержимое или выберите новый путь."
-}
-.\.venv\Scripts\python.exe -m mini_llm.data.splitting --input-file data/processed/2ch_dialogues_qa_candidates.jsonl --output-dir $splitDir --seed 42
-```
-
-Создаются `train.jsonl`, `validation.jsonl`, `test.jsonl`, `split_stats.json`.
-Разбиение детерминированное по `(board, thread_id)`, без thread leakage.
-Для текущих 37 тредов ожидаются 1036/19/14 samples и 33/1/3 треда: пропорции 90/5/5
-относятся к тредам с целочисленным округлением. Validation из одного треда мала;
-её loss не стоит считать исчерпывающей оценкой качества ответов.
-
-После ручного split передайте trainer **этот же каталог** и отдельный путь checkpoints.
-Это новый SFT-запуск, без resume старого корпуса и старого training-формата:
+## Проверки (без скачивания весов и обучения корпуса)
 
 ```powershell
-$checkpointDir = "checkpoints/pretrained/model--qwen--qwen3-0.6b/qlora_qa_candidates"
-if (Test-Path -LiteralPath $checkpointDir) {
-    throw "Каталог уже существует. Выберите новый путь, чтобы сохранить checkpoints."
-}
-.\.venv\Scripts\python.exe -m mini_llm.training --backend pretrained --pretrained-config configs/pretrained/model--qwen--qwen3-0.6b-qlora.json --splits-dir data/processed/splits_qa_candidates --checkpoint-dir $checkpointDir --batch-size 2 --epochs 3 --learning-rate 0.0002 --device cuda
-```
-
-Подготовка split и анализ длин используют CPU/RAM, GPU не требуется.
-Обучение в последней команде использует CUDA и запускается только пользователем.
-
-### Вариант Б: Обучение кастомной модели с нуля
-Запускается через API (предварительно убедитесь, что датасет разбит и токенизатор обучен):
-
-```powershell
-$body = @{ device = "cuda"; batch_size = 4; epochs = 3; learning_rate = 0.0003 } | ConvertTo-Json
-Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:8000/v1/training" -ContentType "application/json" -Body $body
-```
-
----
-
-## 💬 Инференс (Генерация)
-
-Для тестирования генерации используйте UI (`http://127.0.0.1:8501`) или обращайтесь напрямую к API:
-
-```powershell
-$body = @{
-    model_backend = "pretrained"
-    pretrained_model_id = "Qwen/Qwen3-0.6B"
-    pretrained_mode = "after_sft"
-    prompt = "Привет! Объясни простыми словами, что такое LLM."
-} | ConvertTo-Json
-Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:8000/v1/generate" -ContentType "application/json" -Body $body
-```
-
-`GET /v1/generate/options` возвращает доступность активной модели и массив `models`
-с доступностью каждой зарегистрированной модели и её массивом `experiments`.
-В запросе
-генерации `pretrained_model_id` выбирает эту регистрацию без изменения active.json;
-его нельзя совмещать с явными путями к конфигу/checkpoint. Прежние запросы без model ID
-и прямые запросы с путями продолжают работать.
-
-Для checkpoint из experiments передаются только два имени, а путь разрешает сервер:
-
-```powershell
-$body = @{
-    model_backend = "pretrained"
-    pretrained_model_id = "Qwen/Qwen3-0.6B"
-    pretrained_mode = "custom_checkpoint"
-    experiment_id = "qwen3_qa_epoch1_v2"
-    checkpoint_name = "last.pt"
-    prompt = "Привет! Как дела?"
-} | ConvertTo-Json
-Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:8000/v1/generate" -ContentType "application/json" -Body $body
-```
-
-`experiment_id` допускается только для pretrained `custom_checkpoint`. Сервер ограничивает
-путь непосредственными подкаталогами `checkpoints/experiments`, проверяет файл и
-совместимость с выбранной моделью повторно перед генерацией. Неверный, исчезнувший
-или несовместимый checkpoint возвращает ошибку, без переключения на старые веса.
-Запросы без `experiment_id` сохраняют прежнюю семантику.
-
----
-
-## 🧪 Качество кода
-
-Быстрые проверки (линтеры, форматирование, тесты):
-```powershell
-.\.venv\Scripts\pytest.exe
-.\.venv\Scripts\ruff.exe check .
-.\.venv\Scripts\ruff.exe format --check .
-.\.venv\Scripts\mypy.exe .
-.\.venv\Scripts\bandit.exe -r src -q
+.\.venv\Scripts\python.exe -m pytest
+.\.venv\Scripts\python.exe -m ruff check .
+.\.venv\Scripts\python.exe -m ruff format --check .
+.\.venv\Scripts\python.exe -m mypy .
+.\.venv\Scripts\python.exe -m bandit -r src -q
 ```

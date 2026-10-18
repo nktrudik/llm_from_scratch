@@ -18,7 +18,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Подготовить dialogue dataset из raw JSON.")
     parser.add_argument("--source-format", choices=("posts", "sft"), default="posts")
     parser.add_argument("--input-dir", type=Path)
-    parser.add_argument("--output-dir", type=Path, default=Path("data/processed"))
+    parser.add_argument("--output-dir", type=Path, default=Path("data/staging/2ch"))
     parser.add_argument("--review-size", type=int, default=100)
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args(argv)
@@ -26,7 +26,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.source_format == "sft":
             report = preprocess_sft_dataset(
                 SFTPreprocessingConfig(
-                    input_dir=args.input_dir or Path("data/raw/2ch_clean"),
+                    input_dir=args.input_dir or Path("data/sources/2ch/sft-pairs"),
                     output_dir=args.output_dir,
                     review_size=args.review_size,
                     random_seed=args.seed,
@@ -35,7 +35,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         else:
             report = preprocess_dataset(
                 PreprocessingConfig(
-                    input_dir=args.input_dir or Path("data/raw/2ch"),
+                    input_dir=args.input_dir or Path("data/sources/2ch/threads"),
                     output_dir=args.output_dir,
                     review_size=args.review_size,
                     random_seed=args.seed,

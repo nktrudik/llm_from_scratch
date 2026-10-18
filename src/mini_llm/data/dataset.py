@@ -240,7 +240,7 @@ def create_dataloader(
 def create_split_dataloader(
     split: str,
     *,
-    splits_dir: Path = Path("data/processed/splits"),
+    splits_dir: Path = Path("data/datasets/2ch/v3/splits"),
     tokenizer_file: Path = DEFAULT_TOKENIZER_PATH,
     loader_config: DataLoaderConfig | None = None,
     max_sequence_length: int | None = None,
@@ -270,7 +270,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
 
     parser = argparse.ArgumentParser(description="Проверить Dataset/DataLoader на малой выборке.")
     parser.add_argument("--split", choices=SPLIT_NAMES, default="train")
-    parser.add_argument("--splits-dir", type=Path, default=Path("data/processed/splits"))
+    parser.add_argument("--splits-dir", type=Path, default=Path("data/datasets/2ch/v3/splits"))
     parser.add_argument("--tokenizer-file", type=Path, default=DEFAULT_TOKENIZER_PATH)
     parser.add_argument("--batch-size", type=int, default=MAX_BATCH_SIZE)
     parser.add_argument("--num-workers", type=int, default=0)

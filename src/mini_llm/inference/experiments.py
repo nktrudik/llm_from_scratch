@@ -7,6 +7,7 @@ import math
 
 # Нужен только тип UnpicklingError; pickle.load/loads не используются.
 import pickle  # nosec B403
+import re
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -16,8 +17,10 @@ import torch
 
 from mini_llm.inference.checkpoints import resolve_named_checkpoint
 from mini_llm.pretrained.config import PretrainedConfig
+from mini_llm.workspace.catalog import ModelRun, contained, get_run, list_runs
+from mini_llm.workspace.paths import RUNS_ROOT
 
-EXPERIMENTS_ROOT = Path("checkpoints/experiments")
+EXPERIMENTS_ROOT = Path("checkpoints/runs")
 
 
 @dataclass(frozen=True, slots=True)
@@ -25,7 +28,7 @@ class ExperimentCheckpoint:
     """Краткие сведения о checkpoint для выбора в UI."""
 
     name: str
-    global_step: int
+    global_step: int | None
     validation_loss: float | None
 
 
@@ -36,17 +39,19 @@ class Experiment:
     experiment_id: str
     checkpoints: tuple[ExperimentCheckpoint, ...]
     modified_ns: int
+    title: str = ""
+    directory: str = ""
 
 
 @dataclass(frozen=True, slots=True)
 class _CheckpointSummary:
-    config: PretrainedConfig
+    config: PretrainedConfig | None
     global_step: int
     validation_loss: float | None
 
 
 def experiment_directory(experiment_id: str) -> Path:
-    """Разрешить только непосредственный подкаталог experiments, без обхода через ссылки."""
+    """Разрешить серверный ID запуска, не позволяя выход за пределы хранилища."""
 
     if (
         not experiment_id
@@ -58,8 +63,11 @@ def experiment_directory(experiment_id: str) -> Path:
     ):
         raise ValueError("Укажите имя эксперимента без пути")
     directory = EXPERIMENTS_ROOT / experiment_id
+    run = get_run(experiment_id)
+    if run is not None:
+        return contained(run.directory, RUNS_ROOT)
     if directory.resolve().parent != EXPERIMENTS_ROOT.resolve():
-        raise ValueError("Эксперимент должен находиться внутри checkpoints/experiments")
+        raise ValueError("Эксперимент должен находиться внутри checkpoints/runs")
     return directory
 
 
@@ -72,9 +80,14 @@ def _read_summary(path: Path, modified_ns: int, size: int) -> _CheckpointSummary
         if not isinstance(payload, dict):
             raise ValueError("Checkpoint должен содержать объект")
         metadata = payload.get("model_metadata")
-        if not isinstance(metadata, dict) or metadata.get("backend") != "pretrained":
+        if isinstance(metadata, dict) and metadata.get("backend") == "pretrained":
+            config: PretrainedConfig | None = PretrainedConfig.model_validate(
+                metadata.get("pretrained_config")
+            )
+        elif isinstance(payload.get("model_config"), dict):
+            config = None
+        else:
             return None
-        config = PretrainedConfig.model_validate(metadata.get("pretrained_config"))
         step = payload.get("global_step")
         if not isinstance(step, int) or isinstance(step, bool) or step < 0:
             raise ValueError("Некорректный global_step")
@@ -105,40 +118,85 @@ def _summary(path: Path) -> _CheckpointSummary | None:
     return _read_summary(path.resolve(), stat.st_mtime_ns, stat.st_size)
 
 
-def list_experiments(config: PretrainedConfig) -> tuple[Experiment, ...]:
+def list_experiments(config: PretrainedConfig | None) -> tuple[Experiment, ...]:
     """Показать только checkpoints выбранной модели, revision и режима адаптации."""
 
     experiments: list[Experiment] = []
+    entries: list[tuple[Path, str, str, PretrainedConfig | None]] = []
+    managed: dict[str, ModelRun] = {}
+    for run in list_runs():
+        if run.model_id != (config.model_id if config else "custom"):
+            continue
+        expected = (
+            PretrainedConfig.load(run.pretrained_config_file)
+            if run.pretrained_config_file
+            else None
+        )
+        entries.append((run.directory, run.run_id, run.title, expected))
+        managed[run.run_id] = run
+    # Совместимость с внешними одноуровневыми каталогами без manifest.
     for directory in EXPERIMENTS_ROOT.iterdir() if EXPERIMENTS_ROOT.is_dir() else ():
+        if directory.is_dir() and any(directory.glob("*.pt")):
+            entries.append((directory, directory.name, directory.name, config))
+    for directory, run_id, title, expected in entries:
         if not directory.is_dir():
             continue
         checkpoints: list[ExperimentCheckpoint] = []
         modified_ns = 0
         try:
-            experiment_directory(directory.name)
+            if run_id in managed:
+                contained(directory, RUNS_ROOT)
+            else:
+                experiment_directory(run_id)
         except ValueError:
             continue
         for path in directory.glob("*.pt"):
             try:
                 path = resolve_named_checkpoint(directory, path.name)
-                summary = _summary(path)
-                if summary is None or summary.config != config:
+                stat = path.stat()
+                if not stat.st_size:
                     continue
-                checkpoints.append(
-                    ExperimentCheckpoint(path.name, summary.global_step, summary.validation_loss)
-                )
-                modified_ns = max(modified_ns, path.stat().st_mtime_ns)
+                if run_id in managed:
+                    run = managed[run_id]
+                    saved = run.checkpoints.get(path.name)
+                    match = re.fullmatch(r"step_([0-9]+)\.pt", path.name)
+                    step = (
+                        run.global_step
+                        if path.name == "last.pt"
+                        else int(match[1])
+                        if match
+                        else None
+                    )
+                    loss = None
+                    if saved and (saved.modified_ns, saved.size) == (
+                        stat.st_mtime_ns,
+                        stat.st_size,
+                    ):
+                        step, loss = saved.global_step, saved.validation_loss
+                    checkpoints.append(ExperimentCheckpoint(path.name, step, loss))
+                else:
+                    summary = _summary(path)
+                    if summary is None or summary.config != expected:
+                        continue
+                    checkpoints.append(
+                        ExperimentCheckpoint(
+                            path.name, summary.global_step, summary.validation_loss
+                        )
+                    )
+                modified_ns = max(modified_ns, stat.st_mtime_ns)
             except (OSError, RuntimeError, ValueError):
                 continue
         if checkpoints:
             checkpoints.sort(
                 key=lambda item: (
                     0 if item.name == "last.pt" else 1 if item.name == "best.pt" else 2,
-                    -item.global_step,
+                    -(item.global_step if item.global_step is not None else -1),
                     item.name,
                 )
             )
-            experiments.append(Experiment(directory.name, tuple(checkpoints), modified_ns))
+            experiments.append(
+                Experiment(run_id, tuple(checkpoints), modified_ns, title, directory.as_posix())
+            )
     return tuple(sorted(experiments, key=lambda item: (-item.modified_ns, item.experiment_id)))
 
 

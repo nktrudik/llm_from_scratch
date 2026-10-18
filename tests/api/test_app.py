@@ -56,7 +56,7 @@ def test_generation_request_supports_custom_and_pretrained_backends() -> None:
     pretrained = GenerationRequest(
         prompt="Привет",
         model_backend="pretrained",
-        pretrained_config_file=Path("configs/pretrained/model.json"),
+        pretrained_config_file=Path("configs/models/model.json"),
         tokenizer_file=None,
     )
 
@@ -96,8 +96,8 @@ def test_generation_defaults_depend_on_backend(
     custom = GenerationRequest(prompt="Привет", model_backend="custom").to_config()
     pretrained = GenerationRequest(prompt="Привет", model_backend="pretrained").to_config()
 
-    assert custom.checkpoint_file == Path("checkpoints/training/best.pt")
-    assert custom.tokenizer_file == Path("artifacts/tokenizer/2ch_bpe.json")
+    assert custom.checkpoint_file == Path("checkpoints/runs/custom/legacy/v0/run-001/best.pt")
+    assert custom.tokenizer_file == Path("artifacts/tokenizers/custom-bpe/v1/tokenizer.json")
     assert custom.pretrained_config_file is None
     assert pretrained.checkpoint_file is None
     assert pretrained.pretrained_mode == "before_sft"

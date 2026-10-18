@@ -14,8 +14,8 @@ class PreprocessingError(RuntimeError):
 class PreprocessingConfig:
     """Пути и консервативные настройки фильтрации preprocessing."""
 
-    input_dir: Path = Path("data/raw/2ch")
-    output_dir: Path = Path("data/processed")
+    input_dir: Path = Path("data/sources/2ch/threads")
+    output_dir: Path = Path("data/staging/2ch")
     review_size: int = 100
     random_seed: int = 42
     dedup_min_characters: int = 80

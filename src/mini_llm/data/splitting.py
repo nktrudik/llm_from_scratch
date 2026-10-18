@@ -21,8 +21,8 @@ ThreadKey = tuple[str, int]
 class SplitConfig:
     """Пути и seed этапа split."""
 
-    input_file: Path = Path("data/processed/2ch_dialogues.jsonl")
-    output_dir: Path = Path("data/processed/splits")
+    input_file: Path = Path("data/datasets/2ch/v3/samples.jsonl")
+    output_dir: Path = Path("data/datasets/2ch/v3/splits")
     random_seed: int = 42
 
 
@@ -129,9 +129,9 @@ def build_argument_parser() -> argparse.ArgumentParser:
 
     parser = argparse.ArgumentParser(description="Разбить dialogue dataset по тредам.")
     parser.add_argument(
-        "--input-file", type=Path, default=Path("data/processed/2ch_dialogues.jsonl")
+        "--input-file", type=Path, default=Path("data/datasets/2ch/v3/samples.jsonl")
     )
-    parser.add_argument("--output-dir", type=Path, default=Path("data/processed/splits"))
+    parser.add_argument("--output-dir", type=Path, default=Path("data/datasets/2ch/v3/splits"))
     parser.add_argument("--seed", type=int, default=42)
     return parser
 

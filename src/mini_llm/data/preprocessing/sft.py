@@ -19,8 +19,8 @@ from mini_llm.observability import terminal_log
 class SFTPreprocessingConfig:
     """Настройки преобразования per-thread SFT JSON и последующего split."""
 
-    input_dir: Path = Path("data/raw/2ch_clean")
-    output_dir: Path = Path("data/processed")
+    input_dir: Path = Path("data/sources/2ch/sft-pairs")
+    output_dir: Path = Path("data/staging/2ch")
     review_size: int = 100
     random_seed: int = 42
 

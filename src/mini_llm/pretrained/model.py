@@ -19,9 +19,7 @@ from mini_llm.pretrained.dependencies import require_module
 from mini_llm.pretrained.tokenizer import HuggingFaceDialogueTokenizer
 
 
-class _ResizableModel(Protocol):
-    def resize_token_embeddings(self, new_num_tokens: int) -> object: ...
-
+class _GradientCheckpointingModel(Protocol):
     def gradient_checkpointing_enable(self) -> None: ...
 
 
@@ -222,14 +220,14 @@ def prepare_pretrained_model(
         f"Веса загружены model_id={config.model_id}; начинается подготовка backend",
         elapsed=time.perf_counter() - weights_started_at,
     )
-    resizable_model = cast(_ResizableModel, model)
+    checkpointing_model = cast(_GradientCheckpointingModel, model)
 
     model_config = cast(_ModelConfig | None, getattr(model, "config", None))
     if model_config is not None:
         model_config.use_cache = for_inference
         model_config.pad_token_id = tokenizer.pad_token_id
     if config.gradient_checkpointing and not for_inference:
-        resizable_model.gradient_checkpointing_enable()
+        checkpointing_model.gradient_checkpointing_enable()
 
     if config.adaptation_mode in {"lora", "qlora"}:
         peft = require_module("peft")

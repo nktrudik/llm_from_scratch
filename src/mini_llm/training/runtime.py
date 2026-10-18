@@ -10,9 +10,11 @@ from torch.optim import Optimizer
 
 from mini_llm.modeling import CausalLMBackend
 from mini_llm.observability import terminal_log
+from mini_llm.observability.training import report_stage
 from mini_llm.training.checkpoints import save_checkpoint
 from mini_llm.training.config import TrainingConfig
 from mini_llm.training.schemas import TrainingState
+from mini_llm.workspace.catalog import ModelRun, update_progress
 
 
 def select_device(name: str) -> torch.device:
@@ -29,7 +31,7 @@ def select_device(name: str) -> torch.device:
 def training_config_payload(config: TrainingConfig) -> dict[str, object]:
     """Сериализовать воспроизводимые параметры запуска в checkpoint."""
 
-    return {
+    payload: dict[str, object] = {
         "batch_size": config.batch_size,
         "num_workers": config.num_workers,
         "max_train_samples": config.max_train_samples,
@@ -50,6 +52,16 @@ def training_config_payload(config: TrainingConfig) -> dict[str, object]:
             None if config.pretrained_config_file is None else str(config.pretrained_config_file)
         ),
     }
+    manifest = config.checkpoint_dir / "run.json"
+    if manifest.is_file():
+        run = ModelRun.model_validate_json(manifest.read_text(encoding="utf-8"))
+        payload.update(
+            run_id=run.run_id,
+            dataset_id=run.dataset_id,
+            dataset_version=run.dataset_version,
+            splits_dir=config.splits_dir.as_posix(),
+        )
+    return payload
 
 
 def save_named_checkpoint(
@@ -67,14 +79,21 @@ def save_named_checkpoint(
     started_at = time.perf_counter()
     terminal_log("CHECKPOINT", f"Начало сохранения name={name} path={path}")
     try:
-        save_checkpoint(
-            path,
-            model=model,
-            optimizer=optimizer,
-            scaler=scaler,
-            training_config=training_config_payload(config),
-            state=state,
-        )
+        with report_stage(f"Сохранение checkpoint {name}"):
+            save_checkpoint(
+                path,
+                model=model,
+                optimizer=optimizer,
+                scaler=scaler,
+                training_config=training_config_payload(config),
+                state=state,
+            )
+            update_progress(
+                config.checkpoint_dir,
+                state.global_step,
+                checkpoint_name=name,
+                validation_loss=state.last_validation_loss,
+            )
     except Exception:
         terminal_log(
             "CHECKPOINT",

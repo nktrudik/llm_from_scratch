@@ -2,4 +2,4 @@
 
 from pathlib import Path
 
-DEFAULT_TOKENIZER_PATH = Path("artifacts/tokenizer/2ch_bpe.json")
+DEFAULT_TOKENIZER_PATH = Path("artifacts/tokenizers/custom-bpe/v1/tokenizer.json")

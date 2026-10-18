@@ -15,10 +15,10 @@ from mini_llm.training.progress import calculate_training_plan
 class TrainingConfig:
     """Параметры однопроцессного запуска обучения."""
 
-    splits_dir: Path = Path("data/processed/splits")
+    splits_dir: Path = Path("data/datasets/2ch/v3/splits")
     tokenizer_file: Path = DEFAULT_TOKENIZER_PATH
-    token_statistics_file: Path = Path("data/processed/token_statistics.json")
-    checkpoint_dir: Path = Path("checkpoints/training")
+    token_statistics_file: Path = Path("data/datasets/2ch/v3/reports/token_statistics.json")
+    checkpoint_dir: Path = Path("checkpoints/unmanaged/custom")
     resume_from: Path | None = None
     model_backend: Literal["custom", "pretrained"] = "custom"
     pretrained_config_file: Path | None = None

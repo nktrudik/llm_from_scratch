@@ -13,7 +13,7 @@ MODE_LABELS = {
     "custom_checkpoint": "Свой чекпоинт",
 }
 API_BASE_URL = os.environ.get("MINI_LLM_API_URL", "http://127.0.0.1:8000").strip().rstrip("/")
-# Первое чтение metadata каталога checkpoints может занять больше времени.
-OPTIONS_TIMEOUT = (5.0, 120.0)
+# Каталог должен возвращаться быстро; зависший старый backend не ждём несколько минут.
+OPTIONS_TIMEOUT = (5.0, 15.0)
 # Загрузка checkpoint может занять несколько минут; повторять генерацию автоматически нельзя.
 REQUEST_TIMEOUT = (5.0, 600.0)

@@ -1,10 +1,7 @@
 """HTTP-клиент существующей ручки генерации без локальной загрузки модели."""
 
-from contextlib import suppress
-from ipaddress import ip_address
 from pathlib import Path
 from typing import cast
-from urllib.parse import urlsplit
 
 import requests
 from pydantic import BaseModel, Field, ValidationError
@@ -16,17 +13,17 @@ from mini_llm.ui.config import (
     ModelBackend,
     PretrainedMode,
 )
+from mini_llm.ui.http import APIError, api_session, response_payload
 
-
-class GenerationAPIError(RuntimeError):
-    """Ошибка API, которую можно показать пользователю чата."""
+UI_CLIENT_VERSION = 2
+GenerationAPIError = APIError
 
 
 class ExperimentCheckpointOptions(BaseModel):
     """Номер шага и loss файла, доступного на сервере."""
 
     name: str
-    global_step: int
+    global_step: int | None
     validation_loss: float | None = None
 
 
@@ -35,6 +32,8 @@ class ExperimentOptions(BaseModel):
 
     experiment_id: str
     checkpoints: list[ExperimentCheckpointOptions]
+    title: str = ""
+    directory: str = ""
 
 
 class PretrainedModelOptions(BaseModel):
@@ -51,50 +50,16 @@ class GenerationOptions(PretrainedModelOptions):
     """Каталог моделей с совместимостью с прежним ответом без списка models."""
 
     models: list[PretrainedModelOptions] = Field(default_factory=list)
-
-
-def _api_session() -> requests.Session:
-    """Не отправлять локальные запросы к API через системный proxy."""
-
-    try:
-        parsed = urlsplit(API_BASE_URL)
-        hostname = parsed.hostname
-    except ValueError as error:
-        raise GenerationAPIError("Некорректный адрес API в MINI_LLM_API_URL.") from error
-    if parsed.scheme not in {"http", "https"} or not hostname:
-        raise GenerationAPIError(
-            "MINI_LLM_API_URL должен содержать полный http:// или https:// адрес."
-        )
-    local = hostname.rstrip(".").lower() == "localhost"
-    with suppress(ValueError):
-        local = local or ip_address(hostname).is_loopback
-    session = requests.Session()
-    if local:
-        session.trust_env = False
-    return session
-
-
-def _response_payload(response: requests.Response) -> object:
-    try:
-        payload = cast(object, response.json())
-    except ValueError as error:
-        raise GenerationAPIError(
-            f"API вернул некорректный JSON (HTTP {response.status_code})."
-        ) from error
-    if not response.ok:
-        detail = payload.get("detail") if isinstance(payload, dict) else None
-        message = detail if isinstance(detail, str) else "Проверьте терминал сервера и /docs."
-        raise GenerationAPIError(f"Ошибка API (HTTP {response.status_code}): {message}")
-    return payload
+    custom_runs: list[ExperimentOptions] = Field(default_factory=list)
 
 
 def get_generation_options() -> GenerationOptions:
     """Получить каталог, различая недоступность соединения и медленную индексацию."""
 
     try:
-        with _api_session() as session:
+        with api_session(API_BASE_URL) as session:
             response = session.get(f"{API_BASE_URL}/v1/generate/options", timeout=OPTIONS_TIMEOUT)
-        return GenerationOptions.model_validate(_response_payload(response))
+        return GenerationOptions.model_validate(response_payload(response))
     except requests.ConnectTimeout as error:
         raise GenerationAPIError(
             f"Не удалось установить соединение с API ({API_BASE_URL}) за {OPTIONS_TIMEOUT[0]:g} с. "
@@ -103,8 +68,8 @@ def get_generation_options() -> GenerationOptions:
     except requests.Timeout as error:
         raise GenerationAPIError(
             f"API ({API_BASE_URL}) не вернул каталог моделей/checkpoints "
-            f"за {OPTIONS_TIMEOUT[1]:g} с. Возможно, первое чтение metadata ещё продолжается. "
-            "Проверьте терминал backend и обновите страницу."
+            f"за {OPTIONS_TIMEOUT[1]:g} с. После обновления кода перезапустите backend. "
+            "Проверьте терминал сервера и обновите страницу."
         ) from error
     except requests.ConnectionError as error:
         raise GenerationAPIError(
@@ -129,7 +94,9 @@ def generate_reply(
 
     body = {"prompt": prompt, "model_backend": model_backend}
     if experiment_id is not None:
-        if model_backend != "pretrained" or pretrained_mode != "custom_checkpoint":
+        if (model_backend == "pretrained" and pretrained_mode != "custom_checkpoint") or (
+            model_backend == "custom" and pretrained_mode is not None
+        ):
             raise GenerationAPIError("Эксперимент допустим только для checkpoint pretrained-модели")
         body["experiment_id"] = experiment_id
     if pretrained_model_id is not None:
@@ -138,8 +105,10 @@ def generate_reply(
         body["pretrained_model_id"] = pretrained_model_id
     if model_backend == "pretrained" and pretrained_mode is not None:
         body["pretrained_mode"] = pretrained_mode
-    if pretrained_mode == "custom_checkpoint":
-        if model_backend != "pretrained" or checkpoint_name is None:
+    if pretrained_mode == "custom_checkpoint" or (
+        model_backend == "custom" and experiment_id is not None
+    ):
+        if checkpoint_name is None:
             raise GenerationAPIError("Для режима «Свой чекпоинт» Qwen нужно имя checkpoint")
         name = checkpoint_name.strip()
         if not name or any(char in name for char in "/\\:") or Path(name).suffix != ".pt":
@@ -150,7 +119,7 @@ def generate_reply(
     elif checkpoint_name is not None:
         raise GenerationAPIError("Имя checkpoint допустимо только в режиме «Свой чекпоинт»")
     try:
-        with _api_session() as session:
+        with api_session(API_BASE_URL) as session:
             response = session.post(
                 f"{API_BASE_URL}/v1/generate",
                 json=body,
@@ -165,7 +134,7 @@ def generate_reply(
             f"Не удалось связаться с API ({API_BASE_URL}). Убедитесь, что сервер запущен."
         ) from error
 
-    payload = _response_payload(response)
+    payload = response_payload(response)
     if not isinstance(payload, dict) or not isinstance(payload.get("text"), str):
         raise GenerationAPIError("В ответе API отсутствует текст модели.")
     return cast(str, payload["text"])

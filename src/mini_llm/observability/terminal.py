@@ -8,6 +8,8 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
 
+from mini_llm.observability.training import report_stage
+
 
 def format_elapsed(seconds: float) -> str:
     """Отформатировать длительность компактно и без потери длинных интервалов."""
@@ -35,7 +37,8 @@ def terminal_stage(category: str, description: str) -> Iterator[None]:
     started_at = time.perf_counter()
     terminal_log(category, f"Начало: {description}")
     try:
-        yield
+        with report_stage(description):
+            yield
     except Exception:
         terminal_log(
             category,

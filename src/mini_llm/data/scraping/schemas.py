@@ -22,7 +22,7 @@ class ScraperError(RuntimeError):
 class ScraperConfig:
     """Сетевые настройки и каталог результатов одного запуска."""
 
-    output_dir: Path = Path("data/raw")
+    output_dir: Path = Path("data/sources")
     timeout_seconds: float = 15.0
     max_retries: int = 2
     backoff_factor: float = 1.0

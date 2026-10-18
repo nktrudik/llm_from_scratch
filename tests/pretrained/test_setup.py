@@ -111,8 +111,8 @@ def test_qwen3_setup_preserves_qwen25_artifacts(fake_setup_environment: Path) ->
     assert first.checkpoint_dir != second.checkpoint_dir
     assert first.config_file.read_bytes() == old_config
     assert first.best_checkpoint.read_bytes() == b"old checkpoint"
-    assert second.config_file == Path("configs/pretrained/model--qwen--qwen3-0.6b-qlora.json")
-    assert second.checkpoint_dir == Path("checkpoints/pretrained/model--qwen--qwen3-0.6b/qlora")
+    assert second.config_file == Path("configs/models/model--qwen--qwen3-0.6b/qlora.json")
+    assert second.checkpoint_dir == Path("checkpoints/base/model--qwen--qwen3-0.6b/qlora")
     active_before_selection = ACTIVE_MODEL_FILE.read_bytes()
     assert load_registered_model(first.model_id) == first
     assert load_registered_model(second.model_id) == second
@@ -233,9 +233,9 @@ def test_setup_cli_train_requires_existing_splits_before_download(
 def test_setup_cli_train_passes_registered_paths_to_existing_trainer(
     fake_setup_environment: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import mini_llm.training as training
+    import mini_llm.workspace.training as training
 
-    splits = Path("data/processed/splits")
+    splits = Path("data/datasets/2ch/v3/splits")
     splits.mkdir(parents=True)
     for split in ("train", "validation"):
         (splits / f"{split}.jsonl").touch()
@@ -245,7 +245,7 @@ def test_setup_cli_train_passes_registered_paths_to_existing_trainer(
         calls.append(config)
         return TrainingResult(1, 1.0, config.checkpoint_dir / "last.pt", False)
 
-    monkeypatch.setattr(training, "train_model", train)
+    monkeypatch.setattr(training, "train_versioned_config", train)
     assert cli.main(["setup", "owner/model", "--train"]) == 0
     assert len(calls) == 1
     assert calls[0].model_backend == "pretrained"
@@ -278,9 +278,9 @@ def test_setup_does_not_activate_failed_download(
 def test_setup_cli_preserves_explicit_fp16_and_full_dataset_option(
     fake_setup_environment: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import mini_llm.training as training
+    import mini_llm.workspace.training as training
 
-    splits = Path("data/processed/splits")
+    splits = Path("data/datasets/2ch/v3/splits")
     splits.mkdir(parents=True)
     for split in ("train", "validation"):
         (splits / f"{split}.jsonl").touch()
@@ -290,7 +290,7 @@ def test_setup_cli_preserves_explicit_fp16_and_full_dataset_option(
         calls.append(config)
         return TrainingResult(1, 1.0, config.checkpoint_dir / "last.pt", False)
 
-    monkeypatch.setattr(training, "train_model", train)
+    monkeypatch.setattr(training, "train_versioned_config", train)
     assert (
         cli.main(
             [

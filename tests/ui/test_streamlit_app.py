@@ -6,6 +6,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
+import requests
+from pydantic import BaseModel
 
 from mini_llm.ui import client
 from mini_llm.ui import config as ui_config
@@ -338,7 +340,7 @@ def test_ui_defaults_to_latest_experiment_and_sends_names_without_paths(
     assert app_test.selectbox[2].value == "last.pt"
     assert not app_test.text_input
     assert not calls
-    assert any("checkpoints/experiments/new/last.pt" in item.value for item in app_test.caption)
+    assert any("checkpoints/runs/new/last.pt" in item.value for item in app_test.caption)
     app_test.chat_input[0].set_value("Тест").run()
     assert not app_test.exception
     assert calls == [("new", "last.pt")]
@@ -371,3 +373,49 @@ def test_ui_displays_model_reply_as_literal_text(
     assert not app_test.exception
     assert [block.value for block in app_test.markdown] == ["Вопрос"]
     assert [block.value for block in app_test.text] == [reply]
+
+
+def test_ui_recovers_cached_client_without_custom_runs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Воспроизвести обновление app.py при оставшемся в памяти старом client.py."""
+
+    import json
+
+    pytest.importorskip("streamlit")
+    from streamlit.testing.v1 import AppTest
+
+    class OldOptions(BaseModel):
+        model_id: str = "org/instruct"
+        before_sft_available: bool = True
+        after_sft_available: bool = False
+
+    monkeypatch.setattr(client, "UI_CLIENT_VERSION", 1)
+    monkeypatch.setattr(client, "GenerationOptions", OldOptions)
+
+    def get(*args: object, **kwargs: object) -> requests.Response:
+        response = requests.Response()
+        response.status_code = 200
+        response._content = json.dumps(
+            {
+                "model_id": "org/instruct",
+                "before_sft_available": True,
+                "after_sft_available": False,
+                "custom_runs": [
+                    {
+                        "experiment_id": "custom-v1",
+                        "title": "Custom / v1",
+                        "checkpoints": [{"name": "last.pt", "global_step": 10}],
+                    }
+                ],
+            }
+        ).encode()
+        return response
+
+    monkeypatch.setattr(requests.Session, "get", get)
+    app = AppTest.from_file(Path(__file__).parents[2] / "src/mini_llm/ui/app.py").run()
+    assert not app.exception
+    assert "custom_runs" in client.GenerationOptions.model_fields
+    assert app.selectbox[1].value == "custom-v1"
+    app.run()
+    assert not app.exception

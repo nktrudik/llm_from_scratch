@@ -32,9 +32,9 @@ from mini_llm.tokenization import (
 class TokenStatisticsConfig:
     """Пути и размер окна, используемый текущей моделью."""
 
-    splits_dir: Path = Path("data/processed/splits")
+    splits_dir: Path = Path("data/datasets/2ch/v3/splits")
     tokenizer_file: Path = DEFAULT_TOKENIZER_PATH
-    output_file: Path = Path("data/processed/token_statistics.json")
+    output_file: Path = Path("data/datasets/2ch/v3/reports/token_statistics.json")
     max_sequence_length: int = DEFAULT_MAX_SEQUENCE_LENGTH
 
     def __post_init__(self) -> None:
@@ -337,10 +337,12 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Посчитать raw и effective token statistics по split-файлам."
     )
-    parser.add_argument("--splits-dir", type=Path, default=Path("data/processed/splits"))
+    parser.add_argument("--splits-dir", type=Path, default=Path("data/datasets/2ch/v3/splits"))
     parser.add_argument("--tokenizer-file", type=Path, default=DEFAULT_TOKENIZER_PATH)
     parser.add_argument(
-        "--output-file", type=Path, default=Path("data/processed/token_statistics.json")
+        "--output-file",
+        type=Path,
+        default=Path("data/datasets/2ch/v3/reports/token_statistics.json"),
     )
     parser.add_argument("--max-sequence-length", type=int, default=DEFAULT_MAX_SEQUENCE_LENGTH)
     return parser

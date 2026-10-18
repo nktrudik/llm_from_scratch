@@ -26,7 +26,12 @@ from mini_llm.training import train_model
 def run_training(request: TrainingRequest) -> dict[str, object]:
     """Выполнить training pipeline и вернуть компактный итог."""
 
-    result = train_model(request.to_config())
+    if "checkpoint_dir" in request.model_fields_set:
+        result = train_model(request.to_config())
+    else:
+        from mini_llm.workspace.training import train_versioned_config
+
+        result = train_versioned_config(request.to_config())
     return {
         "global_step": result.global_step,
         "best_validation_loss": result.best_validation_loss,

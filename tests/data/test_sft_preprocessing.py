@@ -234,4 +234,4 @@ def test_sft_cli_and_api_select_new_source_without_changing_posts_defaults(tmp_p
     request = PreprocessingRequest(source_format="sft", input_dir=raw, output_dir=tmp_path / "api")
     assert run_preprocessing(request)["final_samples"] == 1
     assert PreprocessingRequest().to_config() == PreprocessingConfig()
-    assert PreprocessingRequest(source_format="sft").input_dir == Path("data/raw/2ch_clean")
+    assert PreprocessingRequest(source_format="sft").input_dir == Path("data/sources/2ch/sft-pairs")

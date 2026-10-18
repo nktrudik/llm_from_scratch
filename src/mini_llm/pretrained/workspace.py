@@ -12,7 +12,7 @@ from pydantic import BaseModel, ConfigDict
 from mini_llm.pretrained.config import AdaptationMode
 
 DEFAULT_MODEL_ID = "Qwen/Qwen2.5-0.5B-Instruct"
-ACTIVE_MODEL_FILE = Path("artifacts/pretrained/active.json")
+ACTIVE_MODEL_FILE = Path("artifacts/models/active.json")
 ADAPTATION_MODES: tuple[AdaptationMode, ...] = ("qlora", "lora", "full")
 
 
@@ -38,9 +38,9 @@ class ModelPaths:
         # Префикс исключает зарезервированные Windows-имена вроде CON и NUL.
         slug = "model--" + "--".join(parts).lower()
         return cls(
-            Path("configs/pretrained") / f"{slug}-{mode}.json",
-            Path("checkpoints/pretrained") / slug / mode,
-            Path("artifacts/pretrained") / slug / f"{mode}.json",
+            Path("configs/models") / slug / f"{mode}.json",
+            Path("checkpoints/base") / slug / mode,
+            Path("artifacts/models") / slug / f"{mode}.json",
         )
 
 

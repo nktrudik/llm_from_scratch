@@ -8,6 +8,7 @@ import torch
 
 from mini_llm.data.dataset import IGNORE_INDEX, DataLoaderConfig, DialogueDataset, create_dataloader
 from mini_llm.observability import ProgressThrottle, terminal_log, terminal_stage
+from mini_llm.observability.training import current_training_progress, report_training
 from mini_llm.training.checkpoints import load_checkpoint
 from mini_llm.training.components import create_training_components
 from mini_llm.training.config import TrainingConfig
@@ -22,6 +23,7 @@ from mini_llm.training.progress import (
 )
 from mini_llm.training.runtime import save_named_checkpoint, select_device
 from mini_llm.training.schemas import TrainingResult, TrainingState
+from mini_llm.workspace.catalog import update_progress
 
 
 def train_model(config: TrainingConfig | None = None) -> TrainingResult:
@@ -29,7 +31,8 @@ def train_model(config: TrainingConfig | None = None) -> TrainingResult:
 
     active_config = config or TrainingConfig()
     try:
-        return _train_model(active_config)
+        with report_training(active_config.checkpoint_dir):
+            return _train_model(active_config)
     except torch.cuda.OutOfMemoryError as error:
         message = (
             f"CUDA OOM: недостаточно VRAM при batch_size={active_config.batch_size}. "
@@ -44,6 +47,7 @@ def _train_model(active_config: TrainingConfig) -> TrainingResult:
     """Выполнить последовательный pipeline с неизменяемыми параметрами запуска."""
 
     training_started_at = time.perf_counter()
+    progress = current_training_progress()
     terminal_log(
         "TRAINING",
         f"Pipeline запущен backend={active_config.model_backend} "
@@ -120,6 +124,12 @@ def _train_model(active_config: TrainingConfig) -> TrainingResult:
         f"steps_per_epoch={plan.steps_per_epoch} "
         f"planned_total_steps={plan.planned_total_steps} planned_epochs={plan.planned_epochs}",
     )
+    update_progress(active_config.checkpoint_dir, 0, plan.planned_total_steps)
+    if progress:
+        progress.snapshot.total_steps = plan.planned_total_steps
+        progress.snapshot.steps_per_epoch = plan.steps_per_epoch
+        progress.snapshot.planned_epochs = plan.planned_epochs
+        progress.publish(force=True)
     with terminal_stage("TOKENS", "чтение готовой статистики effective train tokens"):
         train_token_count, token_count_source = effective_train_tokens(
             active_config.token_statistics_file,
@@ -187,6 +197,8 @@ def _train_model(active_config: TrainingConfig) -> TrainingResult:
     steps_since_log = 0
     tokens_since_log = 0
     log_started = time.perf_counter()
+    if progress:
+        progress.start(step=state.global_step, tokens=state.tokens_seen)
 
     try:
         for epoch in range(state.epoch, plan.planned_epochs):
@@ -209,6 +221,9 @@ def _train_model(active_config: TrainingConfig) -> TrainingResult:
             first_batch_logged = False
             skip_throttle = ProgressThrottle(every_items=500, every_seconds=5.0)
             terminal_log("TRAIN", f"Ожидание первого batch для epoch={epoch + 1}")
+            if progress:
+                progress.snapshot.stage = f"Ожидание первого batch: эпоха {epoch + 1}"
+                progress.publish(force=True)
             for batch_index, batch in enumerate(train_loader):
                 if batch_index < skip_batches:
                     skipped = batch_index + 1
@@ -232,6 +247,9 @@ def _train_model(active_config: TrainingConfig) -> TrainingResult:
                         elapsed=time.perf_counter() - epoch_started_at,
                     )
                     first_batch_logged = True
+                    if progress:
+                        progress.snapshot.stage = "Обучение"
+                        progress.publish(force=True)
                 input_ids = batch["input_ids"].to(device, non_blocking=True)
                 attention_mask = batch["attention_mask"].to(device, non_blocking=True)
                 labels = batch["labels"].to(device, non_blocking=True)
@@ -263,6 +281,19 @@ def _train_model(active_config: TrainingConfig) -> TrainingResult:
                 loss_since_log += state.last_train_loss
                 steps_since_log += 1
                 tokens_since_log += batch_tokens
+                if progress:
+                    progress.snapshot.global_step = state.global_step
+                    progress.snapshot.epoch = epoch + 1
+                    progress.snapshot.epoch_progress = (
+                        (batch_index + 1) / plan.steps_per_epoch * 100
+                    )
+                    progress.snapshot.samples_seen = state.samples_seen
+                    progress.snapshot.tokens_seen = state.tokens_seen
+                    progress.snapshot.train_loss = state.last_train_loss
+                    progress.snapshot.rolling_loss = rolling_average(state.recent_train_losses)
+                    progress.snapshot.recent_losses = list(state.recent_train_losses)
+                    progress.snapshot.learning_rate = float(optimizer.param_groups[0]["lr"])
+                    progress.publish()
 
                 should_log = state.global_step == 1 or (
                     state.global_step % active_config.log_interval == 0
@@ -305,6 +336,9 @@ def _train_model(active_config: TrainingConfig) -> TrainingResult:
                             max_batches=active_config.validation_batches,
                         )
                     state.last_validation_loss = validation_loss
+                    if progress:
+                        progress.snapshot.validation_loss = validation_loss
+                        progress.publish(force=True)
                     last_validation_step = state.global_step
                     terminal_log(
                         "VALIDATION",
@@ -363,6 +397,9 @@ def _train_model(active_config: TrainingConfig) -> TrainingResult:
                 max_batches=active_config.validation_batches,
             )
         state.last_validation_loss = validation_loss
+        if progress:
+            progress.snapshot.validation_loss = validation_loss
+            progress.publish(force=True)
         if validation_loss < state.best_validation_loss:
             state.best_validation_loss = validation_loss
             save_named_checkpoint(
@@ -390,6 +427,8 @@ def _train_model(active_config: TrainingConfig) -> TrainingResult:
         f"last_checkpoint={last_checkpoint}, interrupted={interrupted}",
         elapsed=time.perf_counter() - training_started_at,
     )
+    if progress:
+        progress.finish(interrupted=interrupted)
     return TrainingResult(
         state.global_step,
         state.best_validation_loss,

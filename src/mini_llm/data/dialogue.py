@@ -126,16 +126,6 @@ def iter_training_texts(path: Path) -> Iterator[str]:
         yield sample.response
 
 
-def count_jsonl_records(path: Path) -> int:
-    """Посчитать непустые строки для progress bar без загрузки файла в RAM."""
-
-    try:
-        with path.open(encoding="utf-8") as source:
-            return sum(1 for line in source if line.strip())
-    except OSError as error:
-        raise DialogueFormatError(f"Не удалось прочитать {path}: {error}") from error
-
-
 def write_json(path: Path, payload: dict[str, object]) -> None:
     """Атомарно записать небольшой JSON-отчёт."""
 

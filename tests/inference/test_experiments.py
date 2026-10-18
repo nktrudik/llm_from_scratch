@@ -207,3 +207,43 @@ def test_metadata_cache_is_invalidated_after_checkpoint_update(
     os.utime(path, ns=(previous_mtime + 1_000_000, previous_mtime + 1_000_000))
     assert experiments.list_experiments(registered_config)[0].checkpoints[0].global_step == 518
     assert calls == 2
+
+
+def test_managed_catalog_never_opens_weights_even_on_cold_start(
+    registered_config: PretrainedConfig,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from mini_llm.workspace.catalog import ModelRun, update_progress
+
+    directory = experiments.EXPERIMENTS_ROOT / "model--qwen--qwen3-0.6b/2ch/v3/run-001"
+    directory.mkdir(parents=True)
+    config_file = directory / "pretrained.json"
+    registered_config.save(config_file)
+    run = ModelRun(
+        run_id="model--qwen--qwen3-0.6b--2ch-v3--run-001",
+        model_id=registered_config.model_id,
+        dataset_id="2ch",
+        dataset_version="v3",
+        directory=directory,
+        title="Qwen3 / QA Candidates v3 / run-001",
+        global_step=518,
+        pretrained_config_file=config_file,
+    )
+    run.save()
+    for name in ("last.pt", "best.pt", "step_00000200.pt"):
+        (directory / name).write_bytes(b"not loaded while listing")
+
+    def forbidden(*args: object, **kwargs: object) -> object:
+        pytest.fail("Каталог managed run не должен вызывать torch.load")
+
+    monkeypatch.setattr(torch, "load", forbidden)
+    first = api_module.generation_options().models[0].experiments[0]
+    checkpoints = {item.name: item for item in first.checkpoints}
+    assert checkpoints["last.pt"].global_step == 518
+    assert checkpoints["step_00000200.pt"].global_step == 200
+    assert checkpoints["best.pt"].global_step is None
+    update_progress(directory, 400, checkpoint_name="best.pt", validation_loss=3.1)
+    second = api_module.generation_options().models[0].experiments[0]
+    best = next(item for item in second.checkpoints if item.name == "best.pt")
+    assert best.global_step == 400
+    assert best.validation_loss == 3.1

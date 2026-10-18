@@ -18,7 +18,7 @@ from mini_llm.tokenization import DEFAULT_TOKENIZER_PATH
 class OverfitConfig:
     """Параметры короткого ручного overfit experiment."""
 
-    splits_dir: Path = Path("data/processed/splits")
+    splits_dir: Path = Path("data/datasets/2ch/v3/splits")
     tokenizer_file: Path = DEFAULT_TOKENIZER_PATH
     samples: int = 32
     batch_size: int = 4
@@ -122,7 +122,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Проверить переобучение Transformer на малой train-выборке."
     )
-    parser.add_argument("--splits-dir", type=Path, default=Path("data/processed/splits"))
+    parser.add_argument("--splits-dir", type=Path, default=Path("data/datasets/2ch/v3/splits"))
     parser.add_argument("--tokenizer-file", type=Path, default=DEFAULT_TOKENIZER_PATH)
     parser.add_argument("--samples", type=int, default=32)
     parser.add_argument("--batch-size", type=int, default=4)

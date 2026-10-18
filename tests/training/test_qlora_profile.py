@@ -17,6 +17,7 @@ from mini_llm.api.schemas import PretrainedPrepareRequest, TrainingRequest
 from mini_llm.data.dialogue import DialogueSample
 from mini_llm.data.interfaces import EncodedDialogue
 from mini_llm.modeling import CustomCausalLMBackend, DecoderOnlyTransformer, ModelConfig
+from mini_llm.observability.training import read_training_progress
 from mini_llm.pretrained import PretrainedConfig
 from mini_llm.pretrained.model import HuggingFaceCausalLMBackend
 from mini_llm.training import (
@@ -86,7 +87,14 @@ def test_training_cli_uses_backend_defaults_and_full_dataset_flag(
         return TrainingResult(0, 0.0, Path("last.pt"), False)
 
     monkeypatch.setattr(cli, "train_model", fake_train)
-    args = ["--backend", "pretrained", "--pretrained-config", "model.json"]
+    args = [
+        "--backend",
+        "pretrained",
+        "--pretrained-config",
+        "model.json",
+        "--checkpoint-dir",
+        "temporary-test-run",
+    ]
     if limit is not None:
         args += ["--max-train-samples", str(limit), "--max-validation-samples", str(limit)]
     assert cli.main(args) == 0
@@ -240,6 +248,9 @@ def test_dataset_limits_are_independent_and_leave_jsonl_unchanged(
     result = pipeline.train_model(config)
     output = capsys.readouterr().out
     assert result.global_step == 2
+    live_progress = read_training_progress(config.checkpoint_dir)
+    assert live_progress is not None and live_progress.status == "completed"
+    assert live_progress.global_step == live_progress.total_steps == 2
     assert f"train_samples=3, validation_samples={validation_limit or 5}" in output
     assert f"max_validation_samples={validation_limit or 'all'} num_workers=0" in output
     assert "seq_length=512 batch_size=2" in output
@@ -260,6 +271,9 @@ def test_dataset_limits_are_independent_and_leave_jsonl_unchanged(
         )
     )
     assert resumed.global_step == 4
+    live_progress = read_training_progress(config.checkpoint_dir)
+    assert live_progress is not None and live_progress.start_step == 2
+    assert live_progress.global_step == live_progress.total_steps == 4
     state = cast(dict[str, object], torch.load(resumed.last_checkpoint, weights_only=True))
     assert state["samples_seen"] == 6
     assert state["tokens_seen"] == 12

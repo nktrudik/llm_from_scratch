@@ -43,7 +43,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
     setup.add_argument("--max-sequence-length", type=int, default=512)
     setup.add_argument("--gradient-checkpointing", action=argparse.BooleanOptionalAction)
     setup.add_argument("--train", action="store_true", help="После загрузки явно запустить SFT")
-    setup.add_argument("--splits-dir", type=Path, default=Path("data/processed/splits"))
+    setup.add_argument("--splits-dir", type=Path, default=Path("data/datasets/2ch/v3/splits"))
     setup.add_argument("--batch-size", type=int, choices=range(1, MAX_BATCH_SIZE + 1), default=2)
     setup.add_argument("--num-workers", type=int, default=2)
     setup.add_argument(
@@ -72,7 +72,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
 def _run_setup(args: argparse.Namespace) -> int:
     """Запустить download/config pipeline; обучение возможно только по --train."""
 
-    from mini_llm.training import PretrainedTrainingConfig, train_model
+    from mini_llm.training import PretrainedTrainingConfig
 
     try:
         if args.resume_from is not None and not args.train:
@@ -124,7 +124,9 @@ def _run_setup(args: argparse.Namespace) -> int:
             f"Checkpoints: {registration.checkpoint_dir}"
         )
         if training_config is not None:
-            result = train_model(training_config)
+            from mini_llm.workspace.training import train_versioned_config
+
+            result = train_versioned_config(training_config)
             print(f"Последний checkpoint: {result.last_checkpoint}")
     except (OSError, RuntimeError, ValueError, PretrainedDependencyError) as error:
         print(f"Подготовка/обучение не завершены: {error}")

@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import argparse
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 
 from mini_llm.data.config import MAX_BATCH_SIZE
 from mini_llm.training.config import PretrainedTrainingConfig, TrainingConfig
 from mini_llm.training.pipeline import train_model
+from mini_llm.training.schemas import TrainingResult
 
 
 def build_argument_parser() -> argparse.ArgumentParser:
@@ -17,16 +18,20 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Обучить custom или pretrained causal LM.")
     parser.add_argument("--backend", choices=("custom", "pretrained"), default="custom")
     parser.add_argument("--pretrained-config", type=Path)
-    parser.add_argument("--splits-dir", type=Path, default=Path("data/processed/splits"))
+    parser.add_argument("--splits-dir", type=Path, default=Path("data/datasets/2ch/v3/splits"))
     parser.add_argument(
-        "--tokenizer-file", type=Path, default=Path("artifacts/tokenizer/2ch_bpe.json")
+        "--tokenizer-file",
+        type=Path,
+        default=Path("artifacts/tokenizers/custom-bpe/v1/tokenizer.json"),
     )
     parser.add_argument(
         "--token-statistics-file",
         type=Path,
-        default=Path("data/processed/token_statistics.json"),
+        default=Path("data/datasets/2ch/v3/reports/token_statistics.json"),
     )
-    parser.add_argument("--checkpoint-dir", type=Path, default=Path("checkpoints/training"))
+    parser.add_argument(
+        "--checkpoint-dir", type=Path, help="Явный каталог; иначе новый versioned run"
+    )
     parser.add_argument("--resume-from", type=Path)
     parser.add_argument("--batch-size", type=int, choices=range(1, MAX_BATCH_SIZE + 1))
     parser.add_argument("--num-workers", type=int)
@@ -68,12 +73,17 @@ def main(argv: Sequence[str] | None = None) -> int:
             else TrainingConfig(batch_size=4)
         )
         config_class = PretrainedTrainingConfig if args.backend == "pretrained" else TrainingConfig
-        result = train_model(
+        runner: Callable[[TrainingConfig], TrainingResult] = train_model
+        if args.checkpoint_dir is None:
+            from mini_llm.workspace.training import train_versioned_config
+
+            runner = train_versioned_config
+        result = runner(
             config_class(
                 splits_dir=args.splits_dir,
                 tokenizer_file=args.tokenizer_file,
                 token_statistics_file=args.token_statistics_file,
-                checkpoint_dir=args.checkpoint_dir,
+                checkpoint_dir=args.checkpoint_dir or defaults.checkpoint_dir,
                 resume_from=args.resume_from,
                 model_backend=args.backend,
                 pretrained_config_file=args.pretrained_config,
