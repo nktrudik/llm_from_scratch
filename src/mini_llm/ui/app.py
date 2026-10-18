@@ -2,7 +2,12 @@
 
 import streamlit as st
 
-from mini_llm.ui.client import GenerationAPIError, generate_reply, get_generation_options
+from mini_llm.ui.client import (
+    ExperimentOptions,
+    GenerationAPIError,
+    generate_reply,
+    get_generation_options,
+)
 from mini_llm.ui.config import (
     MODE_LABELS,
     MODEL_BACKENDS,
@@ -10,6 +15,31 @@ from mini_llm.ui.config import (
     ModelBackend,
     PretrainedMode,
 )
+
+
+def _select_experiment_checkpoint(
+    experiments: list[ExperimentOptions], model_id: str
+) -> tuple[str, str]:
+    """Выбрать серверные имена вместо путей; свежий запуск и last.pt предлагаются первыми."""
+
+    experiment_id: str = st.selectbox(
+        "Эксперимент",
+        [item.experiment_id for item in experiments],
+        key=f"experiment_{model_id}",
+    )
+    experiment = next(item for item in experiments if item.experiment_id == experiment_id)
+    if not experiment.checkpoints:
+        raise GenerationAPIError("В выбранном эксперименте нет доступных checkpoints")
+    checkpoints = {item.name: item for item in experiment.checkpoints}
+    names = list(checkpoints)
+    checkpoint_name: str = st.selectbox(
+        "Checkpoint",
+        names,
+        index=names.index("last.pt") if "last.pt" in names else 0,
+        format_func=lambda name: f"{name} · step {checkpoints[name].global_step}",
+        key=f"experiment_checkpoint_{model_id}_{experiment_id}",
+    )
+    return experiment_id, checkpoint_name
 
 
 def main() -> None:
@@ -23,10 +53,12 @@ def main() -> None:
     mode: PretrainedMode | None = None
     pretrained_model_id: str | None = None
     checkpoint_name: str | None = None
+    experiment_id: str | None = None
     ready = True
     if backend == "pretrained":
         try:
-            options = get_generation_options()
+            with st.spinner("Проверяем API и читаем каталог моделей/checkpoints…"):
+                options = get_generation_options()
             if options.models:
                 model_ids = [item.model_id for item in options.models]
                 default_index = (
@@ -39,28 +71,46 @@ def main() -> None:
             ready = availability.before_sft_available
             st.caption(availability.model_id)
             modes: list[PretrainedMode] = ["before_sft"]
-            if availability.after_sft_available:
-                modes.append("after_sft")
-            modes.append("custom_checkpoint")
+            if availability.experiments:
+                modes.insert(0, "custom_checkpoint")
+            else:
+                if availability.after_sft_available:
+                    modes.append("after_sft")
+                modes.append("custom_checkpoint")
             mode = st.radio(
                 "Режим Qwen",
                 modes,
-                key=f"qwen_mode_{availability.model_id}",
+                key=f"qwen_mode_{availability.model_id}"
+                + ("_experiments" if availability.experiments else ""),
                 # При горячем обновлении Streamlit может сохранить старый словарь подписей.
-                format_func=lambda value: MODE_LABELS.get(
-                    value, "Свой чекпоинт" if value == "custom_checkpoint" else value
+                format_func=lambda value: (
+                    "После SFT — эксперимент"
+                    if availability.experiments and value == "custom_checkpoint"
+                    else MODE_LABELS.get(
+                        value, "Свой чекпоинт" if value == "custom_checkpoint" else value
+                    )
                 ),
             )
             if mode == "custom_checkpoint":
-                checkpoint_name = st.text_input(
-                    "Имя чекпоинта",
-                    key=f"qwen_checkpoint_{availability.model_id}",
-                    placeholder="step_00000500.pt",
-                    help="Только имя .pt файла. API выбирает каталог выбранной модели.",
-                ).strip()
+                if availability.experiments:
+                    experiment_id, checkpoint_name = _select_experiment_checkpoint(
+                        availability.experiments, availability.model_id
+                    )
+                else:
+                    checkpoint_name = st.text_input(
+                        "Имя чекпоинта",
+                        key=f"qwen_checkpoint_{availability.model_id}",
+                        placeholder="step_00000500.pt",
+                        help="Только имя .pt файла. API выбирает каталог выбранной модели.",
+                    ).strip()
                 ready = ready and bool(checkpoint_name)
-            if availability.reason:
+            if availability.reason and not availability.experiments:
                 st.caption(availability.reason + " Обновите страницу после подготовки/обучения.")
+            if not availability.experiments and availability.before_sft_available:
+                st.caption(
+                    "Совместимых запусков в checkpoints/experiments нет. "
+                    "Доступны прежние checkpoints зарегистрированной модели."
+                )
         except GenerationAPIError as error:
             st.error(str(error))
             ready = False
@@ -71,7 +121,16 @@ def main() -> None:
         st.markdown(prompt)
     try:
         with st.spinner("Модель готовит ответ…"):
-            if pretrained_model_id is not None:
+            if experiment_id is not None:
+                reply = generate_reply(
+                    prompt,
+                    backend,
+                    mode,
+                    checkpoint_name=checkpoint_name,
+                    pretrained_model_id=pretrained_model_id,
+                    experiment_id=experiment_id,
+                )
+            elif pretrained_model_id is not None:
                 reply = generate_reply(
                     prompt,
                     backend,

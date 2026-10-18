@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import asdict
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException, status
 
 from mini_llm.api.jobs import JobAlreadyRunningError, JobManager
 from mini_llm.api.schemas import (
     DatasetSplitRequest,
+    ExperimentOptionsResponse,
     GenerationOptionsResponse,
     GenerationRequest,
     GenerationResponse,
@@ -181,6 +183,10 @@ def generation_options() -> GenerationOptionsResponse:
                 before_sft_available=options.before_sft_available,
                 after_sft_available=options.after_sft_available,
                 reason=options.reason,
+                experiments=[
+                    ExperimentOptionsResponse.model_validate(asdict(item))
+                    for item in options.experiments
+                ],
             )
         )
     return GenerationOptionsResponse(
@@ -188,6 +194,10 @@ def generation_options() -> GenerationOptionsResponse:
         before_sft_available=availability.before_sft_available,
         after_sft_available=availability.after_sft_available,
         reason=availability.reason,
+        experiments=[
+            ExperimentOptionsResponse.model_validate(asdict(item))
+            for item in availability.experiments
+        ],
         models=models,
     )
 

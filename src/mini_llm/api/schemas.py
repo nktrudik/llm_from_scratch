@@ -18,6 +18,7 @@ from mini_llm.inference.config import (
     DEFAULT_PRETRAINED_CONFIG_PATH,
     PretrainedGenerationMode,
 )
+from mini_llm.inference.experiments import experiment_directory, resolve_experiment_checkpoint
 from mini_llm.modeling.config import DEFAULT_MAX_SEQUENCE_LENGTH
 from mini_llm.pretrained import PretrainedConfig
 from mini_llm.pretrained.workspace import load_active_model, load_registered_model
@@ -235,6 +236,10 @@ class GenerationRequest(BaseModel):
         default=None,
         description="Имя .pt файла в каталоге выбранной модели для custom_checkpoint",
     )
+    experiment_id: str | None = Field(
+        default=None,
+        description="Имя запуска внутри checkpoints/experiments; только для custom_checkpoint",
+    )
     device: str = "cuda"
     max_new_tokens: int = Field(default=256, ge=0)
     temperature: float = Field(default=0.3, gt=0)
@@ -265,6 +270,7 @@ class GenerationRequest(BaseModel):
                     "prompt": "Привет! Как у тебя дела?",
                     "pretrained_mode": "custom_checkpoint",
                     "checkpoint_name": "step_00000500.pt",
+                    "experiment_id": "qwen3_qa_epoch1_v2",
                     "pretrained_model_id": "Qwen/Qwen3-0.6B",
                 },
             ]
@@ -275,6 +281,10 @@ class GenerationRequest(BaseModel):
     def validate_backend_files(self) -> Self:
         """Подставить defaults выбранного backend и проверить обязательные файлы."""
 
+        if self.experiment_id is not None:
+            if self.model_backend != "pretrained" or self.pretrained_mode != "custom_checkpoint":
+                raise ValueError("experiment_id допустим только для custom_checkpoint pretrained")
+            experiment_directory(self.experiment_id)
         if self.pretrained_model_id is not None:
             if self.model_backend != "pretrained":
                 raise ValueError("pretrained_model_id допустим только для pretrained backend")
@@ -335,6 +345,10 @@ class GenerationRequest(BaseModel):
                         else DEFAULT_PRETRAINED_CHECKPOINT_PATH.parent
                     )
                     self.checkpoint_file = checkpoint_dir / self.checkpoint_name
+                    if self.experiment_id is not None:
+                        self.checkpoint_file = (
+                            experiment_directory(self.experiment_id) / self.checkpoint_name
+                        )
             if "pretrained_config_file" not in self.model_fields_set:
                 self.pretrained_config_file = (
                     registration.config_file if registration else DEFAULT_PRETRAINED_CONFIG_PATH
@@ -362,13 +376,24 @@ class GenerationRequest(BaseModel):
     def to_config(self) -> GenerationConfig:
         """Преобразовать параметры запроса во внутреннюю конфигурацию генерации."""
 
-        values = self.model_dump(exclude={"prompt", "checkpoint_name", "pretrained_model_id"})
+        values = self.model_dump(
+            exclude={"prompt", "checkpoint_name", "pretrained_model_id", "experiment_id"}
+        )
         if self.pretrained_mode == "custom_checkpoint":
             if self.checkpoint_file is None or self.checkpoint_name is None:
                 raise ValueError("Для custom_checkpoint нужен checkpoint_name")
-            values["checkpoint_file"] = resolve_named_checkpoint(
-                self.checkpoint_file.parent, self.checkpoint_name
-            )
+            if self.experiment_id is not None:
+                if self.pretrained_config_file is None:
+                    raise ValueError("Для эксперимента нужен pretrained_config_file")
+                values["checkpoint_file"] = resolve_experiment_checkpoint(
+                    self.experiment_id,
+                    self.checkpoint_name,
+                    PretrainedConfig.load(self.pretrained_config_file),
+                )
+            else:
+                values["checkpoint_file"] = resolve_named_checkpoint(
+                    self.checkpoint_file.parent, self.checkpoint_name
+                )
         if values["pretrained_mode"] is None:
             values.pop("pretrained_mode")
         return GenerationConfig(**values)
@@ -381,6 +406,21 @@ class GenerationResponse(BaseModel):
     token_ids: list[int]
 
 
+class ExperimentCheckpointResponse(BaseModel):
+    """Checkpoint с номером шага и сохранённым validation loss."""
+
+    name: str
+    global_step: int
+    validation_loss: float | None = None
+
+
+class ExperimentOptionsResponse(BaseModel):
+    """Доступные checkpoints одного совместимого эксперимента."""
+
+    experiment_id: str
+    checkpoints: list[ExperimentCheckpointResponse]
+
+
 class PretrainedModelOptionsResponse(BaseModel):
     """Доступность режимов одной зарегистрированной pretrained-модели."""
 
@@ -388,6 +428,7 @@ class PretrainedModelOptionsResponse(BaseModel):
     before_sft_available: bool
     after_sft_available: bool
     reason: str | None
+    experiments: list[ExperimentOptionsResponse] = Field(default_factory=list)
 
 
 class GenerationOptionsResponse(PretrainedModelOptionsResponse):

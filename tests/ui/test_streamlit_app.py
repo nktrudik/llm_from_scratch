@@ -292,6 +292,68 @@ def test_ui_handles_empty_model_reply(app_test: AppTest, monkeypatch: pytest.Mon
     assert app_test.caption[0].value == "Модель вернула пустой ответ."
 
 
+def test_ui_defaults_to_latest_experiment_and_sends_names_without_paths(
+    app_test: AppTest, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Свежий last.pt выбирается без ввода пути; переключение само не вызывает генерацию."""
+
+    experiments = [
+        client.ExperimentOptions(
+            experiment_id=name,
+            checkpoints=[
+                client.ExperimentCheckpointOptions(name="last.pt", global_step=step),
+                client.ExperimentCheckpointOptions(name="best.pt", global_step=200),
+            ],
+        )
+        for name, step in (("new", 1036), ("old", 200))
+    ]
+    monkeypatch.setattr(
+        client,
+        "get_generation_options",
+        lambda: client.GenerationOptions(
+            model_id="org/instruct",
+            before_sft_available=True,
+            after_sft_available=True,
+            experiments=experiments,
+        ),
+    )
+    calls: list[tuple[str | None, str | None]] = []
+
+    def generate(
+        prompt: str,
+        backend: ModelBackend,
+        mode: PretrainedMode | None = None,
+        checkpoint_name: str | None = None,
+        pretrained_model_id: str | None = None,
+        experiment_id: str | None = None,
+    ) -> str:
+        calls.append((experiment_id, checkpoint_name))
+        return "Ответ"
+
+    monkeypatch.setattr(client, "generate_reply", generate)
+    app_test.selectbox[0].select("pretrained").run()
+    assert not app_test.exception
+    assert app_test.radio[0].value == "custom_checkpoint"
+    assert app_test.selectbox[1].value == "new"
+    assert app_test.selectbox[2].value == "last.pt"
+    assert not app_test.text_input
+    assert not calls
+    assert any("checkpoints/experiments/new/last.pt" in item.value for item in app_test.caption)
+    app_test.chat_input[0].set_value("Тест").run()
+    assert not app_test.exception
+    assert calls == [("new", "last.pt")]
+    app_test.selectbox[2].select("best.pt").run()
+    app_test.chat_input[0].set_value("Другой checkpoint").run()
+    assert calls[-1] == ("new", "best.pt")
+    app_test.selectbox[1].select("old").run()
+    assert not app_test.exception
+    assert len(calls) == 2
+    app_test.radio[0].set_value("before_sft").run()
+    assert len(app_test.selectbox) == 1
+    app_test.chat_input[0].set_value("Без SFT").run()
+    assert calls == [("new", "last.pt"), ("new", "best.pt"), (None, None)]
+
+
 @pytest.mark.parametrize(
     "reply",
     [">>123\nОтвет **без Markdown**\n\nВторая строка", "<b>Текст</b> и `код` 😄"],

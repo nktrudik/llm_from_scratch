@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass
 
+from mini_llm.inference.experiments import Experiment, list_experiments
 from mini_llm.pretrained import PretrainedConfig
 from mini_llm.pretrained.workspace import DEFAULT_MODEL_ID, load_active_model, load_registered_model
 
@@ -14,6 +15,7 @@ class GenerationAvailability:
     before_sft_available: bool
     after_sft_available: bool
     reason: str | None
+    experiments: tuple[Experiment, ...] = ()
 
 
 def pretrained_generation_options(model_id: str | None = None) -> GenerationAvailability:
@@ -42,6 +44,7 @@ def pretrained_generation_options(model_id: str | None = None) -> GenerationAvai
             True,
             after_sft,
             None if after_sft else "После SFT недоступен: best.pt ещё не создан.",
+            list_experiments(config),
         )
     except (OSError, RuntimeError, ValueError) as error:
         return GenerationAvailability(model_id or DEFAULT_MODEL_ID, False, False, str(error))

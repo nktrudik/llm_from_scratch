@@ -5,8 +5,15 @@ import json
 import pytest
 import requests
 
+from mini_llm.ui import client
 from mini_llm.ui.client import GenerationAPIError, generate_reply, get_generation_options
-from mini_llm.ui.config import API_BASE_URL, REQUEST_TIMEOUT, ModelBackend, PretrainedMode
+from mini_llm.ui.config import (
+    API_BASE_URL,
+    OPTIONS_TIMEOUT,
+    REQUEST_TIMEOUT,
+    ModelBackend,
+    PretrainedMode,
+)
 
 
 def make_response(payload: object, status_code: int = 200) -> requests.Response:
@@ -117,6 +124,7 @@ def test_qwen_request_contains_mode_but_no_model_paths(
 def test_client_reads_availability_from_api(monkeypatch: pytest.MonkeyPatch) -> None:
     def get(*args: object, **kwargs: object) -> requests.Response:
         assert args[1] == f"{API_BASE_URL}/v1/generate/options"
+        assert kwargs["timeout"] == OPTIONS_TIMEOUT
         return make_response(
             {
                 "model_id": "org/instruct",
@@ -131,6 +139,73 @@ def test_client_reads_availability_from_api(monkeypatch: pytest.MonkeyPatch) -> 
     assert options.model_id == "org/instruct"
     assert options.before_sft_available
     assert not options.after_sft_available
+
+
+@pytest.mark.parametrize(
+    ("error", "message"),
+    [
+        (requests.ConnectTimeout("connect"), "установить соединение"),
+        (requests.ReadTimeout("slow catalog"), "не вернул каталог"),
+        (requests.ConnectionError("offline"), "Не удалось подключиться"),
+        (requests.RequestException("network failure"), "Ошибка запроса"),
+    ],
+)
+def test_options_reports_network_failure_kind_and_actual_api_address(
+    monkeypatch: pytest.MonkeyPatch, error: requests.RequestException, message: str
+) -> None:
+    calls = 0
+
+    def get(*args: object, **kwargs: object) -> requests.Response:
+        nonlocal calls
+        calls += 1
+        raise error
+
+    monkeypatch.setattr(requests.Session, "get", get)
+    with pytest.raises(GenerationAPIError, match=message) as caught:
+        get_generation_options()
+    assert API_BASE_URL in str(caught.value)
+    assert calls == 1
+
+
+@pytest.mark.parametrize(
+    ("api_url", "trust_env"),
+    [
+        ("http://127.0.0.1:8000", False),
+        ("http://localhost:8000", False),
+        ("http://[::1]:8000", False),
+        ("https://api.example.test", True),
+    ],
+)
+def test_local_api_bypasses_environment_proxy_for_options_and_generation(
+    monkeypatch: pytest.MonkeyPatch, api_url: str, trust_env: bool
+) -> None:
+    monkeypatch.setattr(client, "API_BASE_URL", api_url)
+    monkeypatch.setenv("HTTP_PROXY", "http://unreachable-proxy.invalid:9000")
+    observed: list[bool] = []
+
+    def get(session: requests.Session, *args: object, **kwargs: object) -> requests.Response:
+        observed.append(session.trust_env)
+        return make_response(
+            {"model_id": "org/model", "before_sft_available": True, "after_sft_available": False}
+        )
+
+    def post(session: requests.Session, *args: object, **kwargs: object) -> requests.Response:
+        observed.append(session.trust_env)
+        return make_response({"text": "Ответ"})
+
+    monkeypatch.setattr(requests.Session, "get", get)
+    monkeypatch.setattr(requests.Session, "post", post)
+    assert get_generation_options().before_sft_available
+    assert generate_reply("Текст", "custom") == "Ответ"
+    assert observed == [trust_env, trust_env]
+
+
+def test_invalid_api_address_reports_configuration_error_without_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(client, "API_BASE_URL", "127.0.0.1:8000")
+    with pytest.raises(GenerationAPIError, match="MINI_LLM_API_URL"):
+        get_generation_options()
 
 
 def test_client_reads_registered_model_catalog(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -216,6 +291,32 @@ def test_client_sends_only_checkpoint_name_without_paths(monkeypatch: pytest.Mon
             "model_backend": "pretrained",
             "pretrained_mode": "custom_checkpoint",
             "checkpoint_name": "step_00000500.pt",
+        }
+    ]
+
+
+def test_client_sends_experiment_id_and_checkpoint_name(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[object] = []
+
+    def post(*args: object, **kwargs: object) -> requests.Response:
+        calls.append(kwargs["json"])
+        return make_response({"text": "Ответ"})
+
+    monkeypatch.setattr(requests.Session, "post", post)
+    assert (
+        generate_reply(
+            "Текст", "pretrained", "custom_checkpoint", "last.pt", "Qwen/Qwen3-0.6B", "new"
+        )
+        == "Ответ"
+    )
+    assert calls == [
+        {
+            "prompt": "Текст",
+            "model_backend": "pretrained",
+            "pretrained_mode": "custom_checkpoint",
+            "checkpoint_name": "last.pt",
+            "pretrained_model_id": "Qwen/Qwen3-0.6B",
+            "experiment_id": "new",
         }
     ]
 

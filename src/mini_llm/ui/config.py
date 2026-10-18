@@ -12,6 +12,8 @@ MODE_LABELS = {
     "after_sft": "После SFT — best checkpoint",
     "custom_checkpoint": "Свой чекпоинт",
 }
-API_BASE_URL = os.environ.get("MINI_LLM_API_URL", "http://127.0.0.1:8000").rstrip("/")
+API_BASE_URL = os.environ.get("MINI_LLM_API_URL", "http://127.0.0.1:8000").strip().rstrip("/")
+# Первое чтение metadata каталога checkpoints может занять больше времени.
+OPTIONS_TIMEOUT = (5.0, 120.0)
 # Загрузка checkpoint может занять несколько минут; повторять генерацию автоматически нельзя.
 REQUEST_TIMEOUT = (5.0, 600.0)
