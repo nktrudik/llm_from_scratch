@@ -154,12 +154,16 @@ class HuggingFaceDialogueTokenizer:
         return cast(list[int], result)
 
     def _encode_chat_window(self, sample: DialogueSample, max_length: int) -> EncodedDialogue:
-        messages = [
-            {"role": "user" if role == USER_TOKEN else "assistant", "content": text}
-            for role, text in zip(
-                context_role_tokens(len(sample.context)), sample.context, strict=True
-            )
-        ]
+        messages = (
+            [{"role": role, "content": text} for role, text in sample.messages[:-1]]
+            if sample.messages
+            else [
+                {"role": "user" if role == USER_TOKEN else "assistant", "content": text}
+                for role, text in zip(
+                    context_role_tokens(len(sample.context)), sample.context, strict=True
+                )
+            ]
+        )
         # Некоторые templates требуют, чтобы разговор начинался с user.
         if messages[0]["role"] == "assistant":
             messages.insert(0, {"role": "user", "content": ""})
@@ -176,15 +180,14 @@ class HuggingFaceDialogueTokenizer:
             if len(full_ids) <= max_length:
                 return EncodedDialogue(full_ids, len(prompt_ids))
             # Старую историю можно сократить, но исходный последний вопрос обязателен.
-            if len(messages) == 1:
+            if len([item for item in messages if item["role"] == "user"]) <= 1:
                 raise OversizedResponseError(
                     response_tokens=len(full_ids) - len(prompt_ids),
                     max_length=max_length,
                     required_tokens=len(full_ids),
                 )
-            messages.pop(0)
-            if messages and messages[0]["role"] == "assistant":
-                messages.pop(0)
+            start = 1 if messages[0]["role"] == "system" else 0
+            del messages[start : start + 2]
 
     def encode_training_window(
         self,

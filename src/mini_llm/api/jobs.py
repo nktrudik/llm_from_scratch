@@ -6,7 +6,7 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
-from threading import Lock
+from threading import Event, Lock
 from typing import Literal
 from uuid import uuid4
 
@@ -30,6 +30,7 @@ class JobRecord:
     result: object | None = None
     error: str | None = None
     operation_progress: dict[str, object] | None = None
+    stop_requested: bool = False
 
     def to_dict(self) -> dict[str, object]:
         """Вернуть независимый JSON-совместимый снимок состояния."""
@@ -45,6 +46,7 @@ class JobManager:
         self._generation_lock = Lock()
         self._jobs: dict[str, JobRecord] = {}
         self._active_job_id: str | None = None
+        self._stop_events: dict[str, Event] = {}
 
     def create(self, kind: str) -> JobRecord:
         """Создать queued-задачу, если другой pipeline сейчас не активен."""
@@ -60,6 +62,7 @@ class JobManager:
                 job_id = uuid4().hex
                 record = JobRecord(job_id, kind, "queued", datetime.now(UTC).isoformat())
                 self._jobs[job_id] = record
+                self._stop_events[job_id] = Event()
                 self._active_job_id = job_id
                 return record
         finally:
@@ -90,7 +93,10 @@ class JobManager:
             record.status = "running"
             record.started_at = datetime.now(UTC).isoformat()
         try:
-            result = operation()
+            from mini_llm.training.control import training_control
+
+            with training_control(self._stop_events[job_id]):
+                result = operation()
         except Exception as error:
             with self._lock:
                 record.status = "failed"
@@ -104,6 +110,19 @@ class JobManager:
                 record.finished_at = datetime.now(UTC).isoformat()
                 if self._active_job_id == job_id:
                     self._active_job_id = None
+
+    def request_stop(self, job_id: str) -> dict[str, object]:
+        """Остановить только обучение, сохранив последний законченный шаг."""
+
+        with self._lock:
+            record = self._jobs.get(job_id)
+            if record is None:
+                raise KeyError(job_id)
+            if record.kind != "training" or record.status not in {"queued", "running"}:
+                raise ValueError("Остановить можно только активное обучение")
+            record.stop_requested = True
+            self._stop_events[job_id].set()
+            return record.to_dict()
 
     def get(self, job_id: str) -> dict[str, object] | None:
         """Вернуть снимок задачи или ``None`` для неизвестного идентификатора."""

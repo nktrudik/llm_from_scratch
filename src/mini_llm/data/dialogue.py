@@ -39,6 +39,7 @@ class DialogueSample:
     thread_id: int
     context: tuple[str, ...]
     response: str
+    messages: tuple[tuple[str, str], ...] = ()
 
 
 def _as_object(value: object, context: str) -> dict[str, object]:
@@ -51,6 +52,21 @@ def parse_dialogue_sample(payload: object, context: str = "sample") -> DialogueS
     """Проверить минимальную схему и вернуть типизированное представление sample."""
 
     root = _as_object(payload, context)
+    if "messages" in root:
+        from mini_llm.data.chatml import conversation_group, parse_messages
+
+        try:
+            chat = parse_messages(root)
+            chat_board, chat_thread_id = conversation_group(root)
+        except ValueError as error:
+            raise DialogueFormatError(f"{context}: {error}") from error
+        return DialogueSample(
+            chat_board,
+            chat_thread_id,
+            tuple(text for role, text in chat[:-1] if role != "system"),
+            chat[-1][1],
+            chat,
+        )
     board = root.get("board")
     thread_id = root.get("thread_id")
     raw_context = root.get("context")

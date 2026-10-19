@@ -50,10 +50,12 @@ class JobInfo(BaseModel):
     """Состояние задачи, но не локальный training thread UI."""
 
     job_id: str
+    kind: str = "training"
     status: Literal["queued", "running", "completed", "failed"]
     error: str | None = None
     result: dict[str, object] | None = None
     progress: TrainingProgress | None = None
+    stop_requested: bool = False
 
 
 def _request(method: str, path: str, body: dict[str, object] | None = None) -> object:
@@ -96,3 +98,9 @@ def get_job(job_id: str) -> JobInfo:
     """Проверить состояние ранее запущенной задачи."""
 
     return JobInfo.model_validate(_request("GET", f"/v1/jobs/{quote(job_id, safe='')}"))
+
+
+def stop_training(job_id: str) -> JobInfo:
+    """Попросить backend завершить текущий шаг и сохранить checkpoint."""
+
+    return JobInfo.model_validate(_request("POST", f"/v1/jobs/{quote(job_id, safe='')}/stop"))

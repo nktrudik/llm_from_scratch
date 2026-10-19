@@ -25,8 +25,8 @@ class PretrainedConfig(BaseModel):
     local_files_only: bool = False
     trust_remote_code: bool = False
     gradient_checkpointing: bool = True
-    lora_rank: int = Field(default=16, ge=1)
-    lora_alpha: int = Field(default=32, ge=1)
+    lora_rank: int = Field(default=8, ge=1)
+    lora_alpha: int = Field(default=16, ge=1)
     lora_dropout: float = Field(default=0.05, ge=0.0, lt=1.0)
     lora_target_modules: tuple[str, ...] | Literal["all-linear"] = "all-linear"
     qlora_quant_type: Literal["nf4", "fp4"] = "nf4"

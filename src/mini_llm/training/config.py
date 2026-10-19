@@ -38,6 +38,7 @@ class TrainingConfig:
     mixed_precision: bool = True
     max_train_samples: int | None = None
     max_validation_samples: int | None = None
+    pretrained_engine: Literal["transformers", "unsloth"] = "transformers"
 
     def __post_init__(self) -> None:
         if self.model_backend == "pretrained" and self.pretrained_config_file is None:

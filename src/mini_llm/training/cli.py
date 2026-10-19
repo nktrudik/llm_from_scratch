@@ -18,6 +18,9 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Обучить custom или pretrained causal LM.")
     parser.add_argument("--backend", choices=("custom", "pretrained"), default="custom")
     parser.add_argument("--pretrained-config", type=Path)
+    parser.add_argument(
+        "--pretrained-engine", choices=("transformers", "unsloth"), default="transformers"
+    )
     parser.add_argument("--splits-dir", type=Path, default=Path("data/datasets/2ch/v3/splits"))
     parser.add_argument(
         "--tokenizer-file",
@@ -87,6 +90,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 resume_from=args.resume_from,
                 model_backend=args.backend,
                 pretrained_config_file=args.pretrained_config,
+                pretrained_engine=args.pretrained_engine,
                 batch_size=args.batch_size if args.batch_size is not None else defaults.batch_size,
                 num_workers=args.num_workers
                 if args.num_workers is not None

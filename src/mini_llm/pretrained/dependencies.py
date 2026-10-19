@@ -16,6 +16,7 @@ def require_module(name: str) -> ModuleType:
     try:
         return import_module(name)
     except ImportError as error:
+        extra = "unsloth" if name == "unsloth" else "pretrained"
         raise PretrainedDependencyError(
-            "Для pretrained-моделей установите optional dependencies: uv sync --extra pretrained"
+            f"Установите optional dependencies: uv sync --locked --extra {extra}"
         ) from error

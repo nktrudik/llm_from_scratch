@@ -29,6 +29,30 @@ def test_api_registers_control_routes_without_starting_jobs() -> None:
     assert "/v1/tokenizer/train" in paths
     assert "/v1/generate" in paths
     assert "/v1/jobs/{job_id}" in paths
+    assert "/v1/jobs/{job_id}/stop" in paths
+
+
+def test_training_stop_route_rejects_other_jobs(monkeypatch: pytest.MonkeyPatch) -> None:
+    from fastapi import HTTPException
+
+    from mini_llm.api import app as api_module
+
+    manager = JobManager()
+    monkeypatch.setattr(api_module, "job_manager", manager)
+    with pytest.raises(HTTPException) as missing:
+        api_module.stop_training("missing")
+    assert missing.value.status_code == 404
+    record = manager.create("model_download")
+    with pytest.raises(HTTPException) as wrong:
+        api_module.stop_training(record.job_id)
+    assert wrong.value.status_code == 409
+    manager.run(record.job_id, lambda: None)
+    training = manager.create("training")
+    assert api_module.stop_training(training.job_id).stop_requested
+    manager.run(training.job_id, lambda: None)
+    with pytest.raises(HTTPException) as completed:
+        api_module.stop_training(training.job_id)
+    assert completed.value.status_code == 409
 
 
 def test_job_manager_runs_only_one_heavy_operation() -> None:

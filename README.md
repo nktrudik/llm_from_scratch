@@ -1,94 +1,95 @@
-# Mini LLM / НейроДвач
+# НейроДвач / Mini LLM
 
-Локальный учебный проект: собственный Transformer и fine-tuning Hugging Face моделей
-(full / LoRA / QLoRA), FastAPI и Streamlit. Интерфейс: **Чат**, **Обучение**, **Модели**.
-Response-only loss, non-thinking chat template, checkpoints/resume, AMP и GPU telemetry.
-Custom: 4 блока, d_model=256, 4 heads, FFN=1024, vocab=8192, tied embeddings, context=1024.
+Локальный чат, SFT Hugging Face моделей и учебный Transformer. FastAPI + Streamlit.
+Pretrained SFT: **TRL SFTTrainer + datasets + PEFT**, опционально Unsloth.
+Custom сохраняет свой trainer: 4 блока, d_model=256, 4 heads, FFN=1024, vocab=8192,
+tied embeddings, context=1024. Обучение и скачивание запускаются только явно.
 
-## Установка и запуск (PowerShell, из корня проекта)
+## Запуск (PowerShell из корня проекта)
+
+Остановите API/UI перед обновлением окружения. Python 3.13, NVIDIA CUDA GPU для QLoRA.
 
 ```powershell
-uv sync --extra dev --extra pretrained --extra ui
-# Терминал 1: один процесс API, без --reload во время обучения.
+uv sync --locked --extra dev --extra pretrained --extra ui
+# Терминал 1: один процесс, без --reload во время обучения.
 .\.venv\Scripts\python.exe -m uvicorn mini_llm.main:app --host 127.0.0.1 --port 8000
 # Терминал 2:
 .\.venv\Scripts\python.exe -m streamlit run src/mini_llm/ui/app.py --server.address 127.0.0.1 --server.port 8501
 ```
 
-UI: http://127.0.0.1:8501 · Swagger: http://127.0.0.1:8000/docs.
-Другой API: задайте `$env:MINI_LLM_API_URL="http://127.0.0.1:8000"` перед запуском UI.
-В чате выберите модель → версию/запуск → checkpoint. До SFT используется базовая модель.
-Во вкладке «Модели» введите HF model ID: файлы, tokenizer и конфиг сохранятся автоматически.
-Там же можно удалить checkpoint, запуск или всю модель с HF cache: сначала план, затем
-подтверждение «УДАЛИТЬ». Очистка необратима; датасеты, код и общий BPE сохраняются.
-Загрузка/очистка используют общую очередь и заблокированы во время генерации/обучения.
-Во вкладке обучения выберите датасет, модель, параметры и нажмите «Запустить обучение».
-Новая папка `data/datasets/<id>/vN/samples.jsonl` обнаруживается при открытии страницы
-или по кнопке «Обновить список датасетов». Backend сохраняет количество samples и SHA256
-в `dataset.json`; JSONL и существующие splits не меняются. Фонового обновления каталога нет.
-Открытие страницы не запускает обучение. Статус — в UI, подробный progress — в терминале API.
-После старта UI обновляет шаги, эпоху, loss, график и приблизительный ETA каждые 2 секунды.
-Метрики пишутся в `progress.json` отдельно от checkpoints; ETA уточняется после первых шагов.
-Одновременно выполняется только одна тяжёлая задача; генерация на это время блокируется.
-Закрытие браузера не останавливает обучение. Не останавливайте API до сохранения checkpoint.
+UI: http://127.0.0.1:8501 · API: http://127.0.0.1:8000/docs.
+Другой API: `$env:MINI_LLM_API_URL="http://127.0.0.1:8000"` перед запуском UI.
 
-## Данные и версии моделей
+- **Чат:** модель → версия (базовая или запуск) → checkpoint; один вопрос/ответ без памяти.
+- **Обучение:** версия датасета → модель → новый запуск/resume → параметры.
+  Редкие параметры скрыты в «Настройки». Видны шаги, loss, график и примерный ETA.
+  «Остановить обучение» завершает текущий шаг и сохраняет native checkpoint и last.pt.
+  При остановке до первого шага checkpoint может отсутствовать. Закрытие UI не останавливает API.
+- **Модели:** загрузка по HF model ID; удаление только целого запуска либо всей модели
+  вместе с её запусками и базовым cache. Сначала план, затем подтверждение «УДАЛИТЬ».
+  Датасеты, код и общий BPE не удаляются. Не меняйте файлы внешним CLI во время очистки.
+
+## Данные и хранение
 
 ```text
-data/sources/2ch/{threads,sft-pairs}/          исходники, не изменяются
-data/staging/2ch/                            результат preprocessing до публикации
-data/datasets/2ch/vN/                        dataset.json, samples.jsonl, splits/, reports/
-checkpoints/runs/<model>/2ch/vN/run-NNN/      run.json, pretrained.json, *.pt
-configs/models/<model>/<mode>.json          профиль base model
-configs/training/qlora-qa.json               стартовые параметры обучения
-artifacts/models/                           регистрации скачанных моделей
-artifacts/tokenizers/custom-bpe/v1/          сохранённый собственный tokenizer
-.cache/huggingface/                          неизменённый HF cache
-data/archive/, checkpoints/archive/         исторические данные и остатки
+data/datasets/<id>/vN/                       samples.jsonl, dataset.json, splits/, reports/
+checkpoints/runs/<model>/<id>/vN/run-NNN/    run.json, pretrained.json, progress.json
+                                           checkpoint-N/, step_NNNNNNNN.pt, best.pt, last.pt
+configs/models/<model>/                     закреплённая revision и профиль модели
+configs/training/qlora-qa.json               параметры нового SFT (r=8, alpha=16)
+artifacts/models/, .cache/huggingface/       реестр и скачанные базовые модели/tokenizer
+artifacts/tokenizers/custom-bpe/v1/          собственный BPE для Custom
+data/sources/, data/staging/, data/archive/ исходники, подготовка, исторические данные
 ```
 
-Версии 2ch: **v1** — исходные SFT-пары (3638), **v2** — QA Full (3638),
-**v3** — QA Candidates (1069; train/validation/test: 1036/19/14).
-Неизвестное происхождение старых моделей обозначено `legacy/v0`.
-Каждый запуск, включая resume, получает новый `run-NNN`: прежние веса не перезаписываются.
-`run.json` связывает модель, данные, параметры, родительский запуск и SHA256 splits.
-Миграция старой структуры выполняется один раз: `python -m mini_llm.workspace migrate`.
-Она переносит файлы без изменения JSONL/.pt; журнал: `data/archive/layout-migration.json`.
-Исторические пути внутри .pt оставлены нетронутыми; старые команды с путями нужно обновить.
+Новый корпус: `data/datasets/<id>/vN/samples.jsonl`, по одной ChatML-записи на строку:
 
-## Подготовка и ручной запуск
+```json
+{"messages":[{"role":"system","content":"Ты помощник."},{"role":"user","content":"Вопрос"},{"role":"assistant","content":"Ответ"}],"metadata":{"board":"b","thread_id":123}}
+```
+
+System необязателен; дальше user/assistant чередуются, последнее сообщение — assistant.
+Текст не изменяется. Старый context/response также читается. Укажите metadata.thread_id,
+чтобы сохранить thread-level grouping; без него одинаковые разговоры получают общую группу.
+Новая версия появляется при открытии страницы обучения или по «Обновить список датасетов».
+Splits создаются явно (90/5/5 по группам); существующие JSONL/splits не перезаписываются.
+
+## SFT и совместимость
+
+Qwen использует один native template с `enable_thinking=False` для train/validation/inference.
+Loss — только последний assistant-ответ и EOS; prompt, пустой thinking-prefix и padding замаскированы.
+Assistant с явным thinking-блоком отклоняется. Слишком длинная пара пропускается целиком,
+старые пары context можно убрать, последний вопрос и полный ответ обязательны.
+Профиль: BF16, NF4 + double quant, r=8, alpha=16, dropout=0.05, all-linear;
+batch=2, seq=512, LR=3e-5, AdamW8bit, workers=2, gradient checkpointing=false.
+Нет скрытого BF16/OOM fallback, packing или изменения исходного корпуса.
+Версии библиотек закреплены в pyproject.toml и uv.lock; постоянный LR, без warmup.
+
+Каждый запуск/resume получает новую папку. Native checkpoint хранит optimizer, scheduler,
+TrainerState и RNG; .pt экспортируется для прежнего inference. Для resume не удаляйте checkpoint-N/.
+Старые .pt остаются доступны в чате, но их optimizer нельзя продолжить в новом TRL trainer.
+Новый SFT начните с базовой модели. Resume нового формата требует исходные модель, данные,
+rank/alpha, LR, batch и seed; увеличьте общий epochs/max_steps, если план уже достигнут.
+Unsloth необязателен: `uv sync --locked --extra dev --extra ui --extra unsloth`,
+затем свежий API и движок unsloth в настройках **до** генерации/загрузки через этот процесс.
+Его GPU-ядра не проверяются CPU unit tests; несовместимость не маскируется fallback.
+
+## CLI и проверки
 
 ```powershell
-# Setup скачивает модель и tokenizer; обучение не запускается.
-.\.venv\Scripts\python.exe -m mini_llm.pretrained setup "Qwen/Qwen3-0.6B"
-# SFT preprocessing использует только *_sft_raw.json и сохраняет staging.
-.\.venv\Scripts\python.exe -m mini_llm.data.preprocessing --source-format sft
-# Публикация копирует JSONL без изменения текста; v4 — пример нового корпуса.
-.\.venv\Scripts\python.exe -m mini_llm.workspace publish data/staging/2ch/2ch_dialogues.jsonl --dataset 2ch --version v4 --title "Новые QA-пары"
-.\.venv\Scripts\python.exe -m mini_llm.workspace split --dataset 2ch --version v4
-.\.venv\Scripts\python.exe -m mini_llm.workspace list
-# Альтернатива кнопке UI: обучение v3, всегда в новом каталоге.
-.\.venv\Scripts\python.exe -m mini_llm.workspace train --dataset 2ch --version v3 --model "Qwen/Qwen3-0.6B" --parameters configs/training/qlora-qa.json
+python -m mini_llm.pretrained setup "Qwen/Qwen3-0.6B"
+python -m mini_llm.workspace split --dataset 2ch --version v5
+python -m mini_llm.workspace train --dataset 2ch --version v5 --model "Qwen/Qwen3-0.6B" --parameters configs/training/qlora-qa.json
+# Resume: к train добавьте --resume-run "<run_id>" --checkpoint last.pt
+python -m pytest
+python -m ruff check .
+python -m ruff format --check .
+python -m mypy .
+python -m bandit -r src -q
 ```
 
-Resume: добавьте `--resume-run "<run_id из workspace list>" --checkpoint last.pt`;
-увеличьте общий epochs/max_steps в JSON параметров. Модель, версия, batch и seed сохраняются.
-Split — детерминированный 90/5/5 по тредам; существующие версии/splits не заменяются.
-QLoRA: BF16, NF4+double quant, r=16, alpha=32, dropout=0.05, all-linear;
-пример: batch=2, seq=512, LR=3e-5, AdamW8bit, workers=2, без gradient checkpointing.
-Скрытого fallback при BF16/OOM нет. QLoRA требует совместимую CUDA GPU.
-Preprocessing/split/BPE используют CPU/RAM; обучение и генерация по умолчанию — CUDA.
-Scraper, BPE и token statistics доступны через Swagger; автоматически не запускаются.
-Код в `src/mini_llm/`: data, modeling, pretrained, tokenization, training,
-inference, workspace, api, ui, observability. Нет distributed training и dataset packing.
-Обычные CLI/API training тоже создают новый run; явный checkpoint-dir оставлен для совместимости.
-
-## Проверки (без скачивания весов и обучения корпуса)
-
-```powershell
-.\.venv\Scripts\python.exe -m pytest
-.\.venv\Scripts\python.exe -m ruff check .
-.\.venv\Scripts\python.exe -m ruff format --check .
-.\.venv\Scripts\python.exe -m mypy .
-.\.venv\Scripts\python.exe -m bandit -r src -q
-```
+Splits/токенизация используют CPU/RAM; QLoRA и обычная генерация — GPU.
+Scraper, preprocessing, собственный BPE и statistics доступны через существующие CLI/Swagger.
+Основа: [статья](https://habr.com/ru/companies/otus/articles/1026700/),
+[TRL](https://huggingface.co/docs/trl/v1.0.0/en/sft_trainer),
+[Unsloth](https://unsloth.ai/docs/get-started/install/windows-installation).

@@ -49,6 +49,7 @@ class JobResponse(BaseModel):
     error: str | None = None
     progress: TrainingProgress | None = None
     operation_progress: OperationProgress | None = None
+    stop_requested: bool = False
 
 
 class TrainingRequest(BaseModel):
@@ -79,6 +80,7 @@ class TrainingRequest(BaseModel):
     mixed_precision: bool = True
     max_train_samples: int | None = Field(default=None, ge=1)
     max_validation_samples: int | None = Field(default=None, ge=1)
+    pretrained_engine: Literal["transformers", "unsloth"] = "transformers"
 
     @model_validator(mode="after")
     def validate_duration(self) -> Self:

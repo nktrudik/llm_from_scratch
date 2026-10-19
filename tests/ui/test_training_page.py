@@ -162,7 +162,7 @@ def test_dataset_refresh_fetches_new_versions_without_starting_training(
     assert not training_app.exception
     assert calls == [True, True]
     assert training_app.selectbox[0].value == "2ch/v4"
-    assert any("Всего samples: 500" in caption.value for caption in training_app.caption)
+    assert "500" in training_app.selectbox[0].options[0]
     training_app.run()
     assert calls == [True, True, True]
 
@@ -210,3 +210,31 @@ def test_ui_shows_live_progress_eta_and_updated_loss(
     values = {metric.label: metric.value for metric in training_app.metric}
     assert values["Train loss"] == "1.0000"
     assert values["Осталось примерно"] == "≈ 02:00"
+
+
+def test_training_stop_requires_button_and_is_not_repeated(
+    training_app: AppTest,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    job = training_client.JobInfo(job_id="active", status="running")
+    calls: list[str] = []
+
+    def stop(job_id: str) -> training_client.JobInfo:
+        calls.append(job_id)
+        job.stop_requested = True
+        return job
+
+    monkeypatch.setattr(training_client, "get_job", lambda _: job)
+    monkeypatch.setattr(training_client, "stop_training", stop)
+    training_app.session_state["training_job_id"] = job.job_id
+    training_app.segmented_control[0].set_value("Обучение").run()
+    assert not training_app.exception and not calls
+    next(
+        button for button in training_app.button if button.label == "Остановить обучение"
+    ).click().run()
+    assert not training_app.exception and calls == ["active"]
+    assert next(
+        button for button in training_app.button if button.label == "Остановить обучение"
+    ).disabled
+    training_app.run()
+    assert calls == ["active"]

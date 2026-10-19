@@ -12,6 +12,7 @@ from mini_llm.observability.training import current_training_progress, report_tr
 from mini_llm.training.checkpoints import load_checkpoint
 from mini_llm.training.components import create_training_components
 from mini_llm.training.config import TrainingConfig
+from mini_llm.training.control import TrainingCancelled, training_stop_requested
 from mini_llm.training.monitoring import evaluate_validation_loss, gpu_telemetry
 from mini_llm.training.optimizers import create_optimizer, optimizer_name
 from mini_llm.training.precision import create_grad_scaler
@@ -32,6 +33,19 @@ def train_model(config: TrainingConfig | None = None) -> TrainingResult:
     active_config = config or TrainingConfig()
     try:
         with report_training(active_config.checkpoint_dir):
+            if active_config.model_backend == "pretrained":
+                from mini_llm.training.sft.pipeline import train_pretrained
+
+                try:
+                    return train_pretrained(active_config)
+                except TrainingCancelled:
+                    progress = current_training_progress()
+                    if progress:
+                        progress.finish(interrupted=True)
+                    terminal_log("TRAINING", "Подготовка остановлена до optimizer steps")
+                    return TrainingResult(
+                        0, float("inf"), active_config.checkpoint_dir / "last.pt", True
+                    )
             return _train_model(active_config)
     except torch.cuda.OutOfMemoryError as error:
         message = (
@@ -225,6 +239,10 @@ def _train_model(active_config: TrainingConfig) -> TrainingResult:
                 progress.snapshot.stage = f"Ожидание первого batch: эпоха {epoch + 1}"
                 progress.publish(force=True)
             for batch_index, batch in enumerate(train_loader):
+                if training_stop_requested():
+                    interrupted = True
+                    stop_requested = True
+                    break
                 if batch_index < skip_batches:
                     skipped = batch_index + 1
                     if skip_throttle.should_report(skipped):

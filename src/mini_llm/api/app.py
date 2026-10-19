@@ -170,6 +170,18 @@ def start_training(request: TrainingRequest, background_tasks: BackgroundTasks) 
     return _submit_job("training", background_tasks, lambda: run_training(request))
 
 
+@app.post("/v1/jobs/{job_id}/stop", response_model=JobResponse)
+def stop_training(job_id: str) -> JobResponse:
+    """Запросить сохранение и остановку на ближайшей безопасной границе шага."""
+
+    try:
+        return JobResponse.model_validate(job_manager.request_stop(job_id))
+    except KeyError as error:
+        raise HTTPException(status_code=404, detail="Задача не найдена") from error
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+
+
 @app.post(
     "/v1/pretrained/prepare",
     response_model=JobResponse,

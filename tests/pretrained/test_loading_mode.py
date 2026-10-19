@@ -112,8 +112,8 @@ def test_qlora_compute_dtype_and_lora_parameters_are_preserved(
     }
     assert adaptation == {
         "task_type": "CAUSAL_LM",
-        "r": 16,
-        "lora_alpha": 32,
+        "r": 8,
+        "lora_alpha": 16,
         "lora_dropout": 0.05,
         "target_modules": "all-linear",
         "bias": "none",

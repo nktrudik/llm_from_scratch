@@ -317,7 +317,9 @@ def test_oom_is_reported_without_retries(monkeypatch: pytest.MonkeyPatch) -> Non
         calls.append(config.batch_size)
         raise torch.cuda.OutOfMemoryError("synthetic OOM")
 
-    monkeypatch.setattr(pipeline, "_train_model", fail)
+    from mini_llm.training.sft import pipeline as sft_pipeline
+
+    monkeypatch.setattr(sft_pipeline, "train_pretrained", fail)
     with pytest.raises(RuntimeError, match="автоматический fallback отключён"):
         pipeline.train_model(PretrainedTrainingConfig(pretrained_config_file=Path("model.json")))
     assert calls == [2]

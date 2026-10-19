@@ -59,8 +59,8 @@ def test_setup_pins_revision_and_registers_artifacts(
     assert config.max_sequence_length == 512
     assert config.torch_dtype == ("float32" if mode == "full" else "bfloat16")
     assert config.gradient_checkpointing == (mode != "qlora")
-    assert config.lora_rank == 16
-    assert config.lora_alpha == 32
+    assert config.lora_rank == 8
+    assert config.lora_alpha == 16
     assert config.lora_dropout == 0.05
     assert config.lora_target_modules == "all-linear"
     assert config.qlora_quant_type == "nf4"
@@ -76,13 +76,15 @@ def test_setup_does_not_overwrite_config_of_existing_checkpoints(
     fake_setup_environment: Path,
 ) -> None:
     registration = setup.setup_pretrained_model("owner/model")
-    old_config = PretrainedConfig.load(registration.config_file).model_copy(update={"lora_rank": 8})
+    old_config = PretrainedConfig.load(registration.config_file).model_copy(
+        update={"lora_rank": 16}
+    )
     old_config.save(registration.config_file)
     registration.best_checkpoint.write_bytes(b"checkpoint")
 
     with pytest.raises(RuntimeError, match="не перезаписан"):
         setup.setup_pretrained_model("owner/model")
-    assert PretrainedConfig.load(registration.config_file).lora_rank == 8
+    assert PretrainedConfig.load(registration.config_file).lora_rank == 16
 
 
 @pytest.mark.parametrize("model_id", ["../model", "a/../../model", "/tmp/model", "a\\b", "a//b"])

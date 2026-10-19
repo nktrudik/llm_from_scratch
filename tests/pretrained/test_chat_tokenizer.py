@@ -146,6 +146,34 @@ def test_training_and_inference_use_the_same_non_thinking_prefix() -> None:
     assert window.token_ids[window.response_start - 2 : window.response_start] == [70, 71]
 
 
+def test_sft_preparation_masks_thinking_prefix_and_skips_oversized_pairs(tmp_path: Path) -> None:
+    pytest.importorskip("datasets")
+    from mini_llm.training.sft.data import prepare_dataset
+
+    rows = [
+        {
+            "messages": [
+                {"role": "user", "content": question},
+                {"role": "assistant", "content": "answer"},
+            ]
+        }
+        for question in ("question", "too long " * 100)
+    ]
+    path = tmp_path / "train.jsonl"
+    path.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
+    original = path.read_bytes()
+    tokenizer = HuggingFaceDialogueTokenizer(ThinkingTokenizer())
+    data = prepare_dataset(path, tokenizer, max_length=64, limit=None)
+    assert len(data) == 1
+    row = data[0]
+    prompt = tokenizer.encode_prompt("question")
+    assert row["input_ids"][: len(prompt)] == prompt
+    assert row["labels"][: len(prompt)] == [-100] * len(prompt)
+    assert 70 not in row["labels"] and 71 not in row["labels"]
+    assert row["labels"][len(prompt) :] == [*tokenizer.encode("answer"), 2]
+    assert path.read_bytes() == original
+
+
 def test_unused_reasoning_template_does_not_change_default_template() -> None:
     backend = ThinkingTokenizer()
     backend.chat_template = {"default": "native-template", "tool_use": "enable_thinking"}

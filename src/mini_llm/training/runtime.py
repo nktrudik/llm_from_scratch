@@ -48,6 +48,8 @@ def training_config_payload(config: TrainingConfig) -> dict[str, object]:
         "random_seed": config.random_seed,
         "mixed_precision": config.mixed_precision,
         "model_backend": config.model_backend,
+        "pretrained_engine": config.pretrained_engine,
+        "splits_dir": config.splits_dir.as_posix(),
         "pretrained_config_file": (
             None if config.pretrained_config_file is None else str(config.pretrained_config_file)
         ),

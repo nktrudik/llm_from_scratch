@@ -1,4 +1,4 @@
-"""Проверки Streamlit-экрана с подменённой генерацией, без HTTP и модели."""
+"""Проверки компактного чата без модели, сети и сохранения истории."""
 
 from __future__ import annotations
 
@@ -6,416 +6,162 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
-import requests
-from pydantic import BaseModel
 
 from mini_llm.ui import client
-from mini_llm.ui import config as ui_config
-from mini_llm.ui.config import ModelBackend, PretrainedMode
 
 if TYPE_CHECKING:
     from streamlit.testing.v1 import AppTest
 
 
 @pytest.fixture
-def app_test(monkeypatch: pytest.MonkeyPatch) -> AppTest:
-    """Запустить экран без браузера; optional-группа ui нужна только для этих тестов."""
+def chat(monkeypatch: pytest.MonkeyPatch) -> AppTest:
+    """Открыть настоящий Streamlit-экран с серверным каталогом-заглушкой."""
 
     pytest.importorskip("streamlit")
     from streamlit.testing.v1 import AppTest
 
-    monkeypatch.setattr(
-        client,
-        "get_generation_options",
-        lambda: client.GenerationOptions(
-            model_id="org/instruct", before_sft_available=True, after_sft_available=True
-        ),
-    )
-    return AppTest.from_file(Path(__file__).parents[2] / "src" / "mini_llm" / "ui" / "app.py").run()
-
-
-def test_ui_shows_only_current_exchange(app_test: AppTest, monkeypatch: pytest.MonkeyPatch) -> None:
-    calls: list[tuple[str, ModelBackend, PretrainedMode | None]] = []
-
-    def generate(prompt: str, backend: ModelBackend, mode: PretrainedMode | None = None) -> str:
-        calls.append((prompt, backend, mode))
-        return f"Ответ: {prompt}"
-
-    monkeypatch.setattr(client, "generate_reply", generate)
-    assert not app_test.exception
-    assert len(app_test.selectbox) == len(app_test.chat_input) == 1
-    assert not app_test.chat_message
-    assert not app_test.sidebar.children
-
-    app_test.chat_input[0].set_value("Первое сообщение").run()
-    assert not app_test.exception
-    assert len(app_test.chat_message) == 2
-    assert [block.value for block in app_test.markdown] == ["Первое сообщение"]
-    assert [block.value for block in app_test.text] == ["Ответ: Первое сообщение"]
-
-    app_test.chat_input[0].set_value("Второе сообщение").run()
-    assert len(app_test.chat_message) == 2
-    assert [block.value for block in app_test.markdown] == ["Второе сообщение"]
-    assert [block.value for block in app_test.text] == ["Ответ: Второе сообщение"]
-    assert calls == [("Первое сообщение", "custom", None), ("Второе сообщение", "custom", None)]
-
-
-def test_ui_switches_backend_without_replaying_request(
-    app_test: AppTest, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    calls: list[tuple[str, ModelBackend, PretrainedMode | None]] = []
-
-    def generate(prompt: str, backend: ModelBackend, mode: PretrainedMode | None = None) -> str:
-        calls.append((prompt, backend, mode))
-        return "Привет!"
-
-    monkeypatch.setattr(client, "generate_reply", generate)
-    app_test.selectbox[0].select("pretrained").run()
-    assert not calls
-    app_test.chat_input[0].set_value("Привет").run()
-    assert not app_test.exception
-    assert calls == [("Привет", "pretrained", "before_sft")]
-    app_test.selectbox[0].select("custom").run()
-    assert len(calls) == 1
-    assert not app_test.chat_message
-
-
-def test_ui_handles_cached_labels_without_custom_checkpoint(
-    app_test: AppTest, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Воспроизвести старый словарь config, оставшийся после горячего обновления UI."""
-
-    monkeypatch.delitem(ui_config.MODE_LABELS, "custom_checkpoint")
-    app_test.selectbox[0].select("pretrained").run()
-    assert not app_test.exception
-    assert "Свой чекпоинт" in app_test.radio[0].options
-    app_test.radio[0].set_value("custom_checkpoint").run()
-    assert not app_test.exception
-    assert len(app_test.text_input) == 1
-    assert app_test.chat_input[0].disabled
-
-
-def test_ui_qwen_after_sft_is_unselectable_without_best_checkpoint(
-    app_test: AppTest, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setattr(
-        client,
-        "get_generation_options",
-        lambda: client.GenerationOptions(
-            model_id="org/instruct",
-            before_sft_available=True,
-            after_sft_available=False,
-            reason="После SFT недоступен: best.pt ещё не создан.",
-        ),
-    )
-    assert app_test.selectbox[0].options == ["Custom", "Hugging Face"]
-    app_test.selectbox[0].select("pretrained").run()
-    assert not app_test.exception
-    assert app_test.radio[0].options == ["До SFT — исходная модель", "Свой чекпоинт"]
-    assert not app_test.chat_input[0].disabled
-
-
-def test_ui_can_select_after_sft_when_checkpoint_exists(
-    app_test: AppTest, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    calls: list[str | None] = []
-
-    def generate(prompt: str, backend: ModelBackend, mode: PretrainedMode | None = None) -> str:
-        calls.append(mode)
-        return "Ответ"
-
-    monkeypatch.setattr(client, "generate_reply", generate)
-    app_test.selectbox[0].select("pretrained").run()
-    app_test.radio[0].set_value("after_sft").run()
-    app_test.chat_input[0].set_value("Тест").run()
-    assert not app_test.exception
-    assert calls == ["after_sft"]
-
-
-@pytest.mark.parametrize("checkpoint_name", ["step_00000500.pt", "last.pt", "best.pt"])
-def test_ui_sends_checkpoint_name_and_requires_nonempty_input(
-    app_test: AppTest, monkeypatch: pytest.MonkeyPatch, checkpoint_name: str
-) -> None:
-    calls: list[tuple[str, ModelBackend, PretrainedMode | None, str | None]] = []
-
-    def generate(
-        prompt: str,
-        backend: ModelBackend,
-        mode: PretrainedMode | None = None,
-        checkpoint_name: str | None = None,
-    ) -> str:
-        calls.append((prompt, backend, mode, checkpoint_name))
-        return "Ответ checkpoint"
-
-    monkeypatch.setattr(client, "generate_reply", generate)
-    app_test.selectbox[0].select("pretrained").run()
-    app_test.radio[0].set_value("custom_checkpoint").run()
-    assert app_test.chat_input[0].disabled
-    assert len(app_test.text_input) == 1
-    app_test.text_input[0].set_value("   ").run()
-    assert app_test.chat_input[0].disabled
-    app_test.text_input[0].set_value(f" {checkpoint_name} ").run()
-    assert not app_test.chat_input[0].disabled
-    app_test.chat_input[0].set_value("Привет").run()
-    assert not app_test.exception
-    assert calls == [("Привет", "pretrained", "custom_checkpoint", checkpoint_name)]
-    app_test.radio[0].set_value("before_sft").run()
-    assert not app_test.text_input
-    assert len(calls) == 1
-    app_test.selectbox[0].select("custom").run()
-    assert not app_test.radio
-    assert not app_test.text_input
-
-
-def test_ui_requires_preparation_for_qwen(
-    app_test: AppTest, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setattr(
-        client,
-        "get_generation_options",
-        lambda: client.GenerationOptions(
-            model_id="org/instruct",
-            before_sft_available=False,
-            after_sft_available=False,
-            reason="Выполните setup",
-        ),
-    )
-    app_test.selectbox[0].select("pretrained").run()
-    assert app_test.chat_input[0].disabled
-    app_test.selectbox[0].select("custom").run()
-    assert not app_test.radio
-    assert not app_test.chat_input[0].disabled
-
-
-def test_ui_selects_qwen_model_and_keeps_its_checkpoint_modes_separate(
-    app_test: AppTest, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Смена модели не генерирует ответ и не использует режим best другой модели."""
-
-    first = client.PretrainedModelOptions(
-        model_id="Qwen/Qwen2.5-0.5B-Instruct",
-        before_sft_available=True,
-        after_sft_available=True,
-    )
-    second = client.PretrainedModelOptions(
-        model_id="Qwen/Qwen3-0.6B",
-        before_sft_available=True,
-        after_sft_available=False,
-        reason="best.pt ещё не создан",
-    )
-    monkeypatch.setattr(
-        client,
-        "get_generation_options",
-        lambda: client.GenerationOptions(**first.model_dump(), models=[first, second]),
-    )
-    calls: list[tuple[str | None, PretrainedMode | None, str | None]] = []
-
-    def generate(
-        prompt: str,
-        backend: ModelBackend,
-        mode: PretrainedMode | None = None,
-        checkpoint_name: str | None = None,
-        pretrained_model_id: str | None = None,
-    ) -> str:
-        assert backend == "pretrained"
-        calls.append((pretrained_model_id, mode, checkpoint_name))
-        return "Ответ"
-
-    monkeypatch.setattr(client, "generate_reply", generate)
-    app_test.selectbox[0].select("pretrained").run()
-    assert not app_test.exception
-    assert app_test.selectbox[1].options == [first.model_id, second.model_id]
-    app_test.radio[0].set_value("after_sft").run()
-    app_test.selectbox[1].select(second.model_id).run()
-    assert not app_test.exception
-    assert app_test.radio[0].value == "before_sft"
-    assert app_test.radio[0].options == ["До SFT — исходная модель", "Свой чекпоинт"]
-    assert not calls
-    app_test.chat_input[0].set_value("Тест Qwen3").run()
-    assert not app_test.exception
-    assert calls == [(second.model_id, "before_sft", None)]
-    app_test.radio[0].set_value("custom_checkpoint").run()
-    assert app_test.chat_input[0].disabled
-    app_test.text_input[0].set_value("last.pt").run()
-    app_test.chat_input[0].set_value("Тест checkpoint").run()
-    assert not app_test.exception
-    assert calls[-1] == (second.model_id, "custom_checkpoint", "last.pt")
-    app_test.selectbox[1].select(first.model_id).run()
-    assert not app_test.exception
-    assert "После SFT — best checkpoint" in app_test.radio[0].options
-    assert len(calls) == 2
-
-
-def test_ui_displays_api_failure(app_test: AppTest, monkeypatch: pytest.MonkeyPatch) -> None:
-    def generate(prompt: str, backend: ModelBackend) -> str:
-        raise client.GenerationAPIError("Запустите API")
-
-    monkeypatch.setattr(client, "generate_reply", generate)
-    app_test.chat_input[0].set_value("Привет").run()
-    assert not app_test.exception
-    assert app_test.error[0].value == "Запустите API"
-
-
-def test_ui_disables_qwen_when_options_request_fails(
-    app_test: AppTest, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Ошибка проверки режимов не должна мешать переключиться обратно на Custom."""
-
-    def options() -> client.GenerationOptions:
-        raise client.GenerationAPIError("Не удалось проверить режимы Qwen")
-
-    monkeypatch.setattr(client, "get_generation_options", options)
-    app_test.selectbox[0].select("pretrained").run()
-    assert not app_test.exception
-    assert app_test.chat_input[0].disabled
-    assert app_test.error[0].value == "Не удалось проверить режимы Qwen"
-    app_test.selectbox[0].select("custom").run()
-    assert not app_test.exception
-    assert not app_test.chat_input[0].disabled
-
-
-def test_ui_ignores_blank_input(app_test: AppTest, monkeypatch: pytest.MonkeyPatch) -> None:
-    def generate(prompt: str, backend: ModelBackend) -> str:
-        pytest.fail("Пустое сообщение не должно отправляться в API")
-
-    monkeypatch.setattr(client, "generate_reply", generate)
-    app_test.chat_input[0].set_value("   ").run()
-    assert not app_test.exception
-    assert not app_test.chat_message
-
-
-def test_ui_handles_empty_model_reply(app_test: AppTest, monkeypatch: pytest.MonkeyPatch) -> None:
-    def generate(prompt: str, backend: ModelBackend) -> str:
-        return ""
-
-    monkeypatch.setattr(client, "generate_reply", generate)
-    app_test.chat_input[0].set_value("Привет").run()
-    assert not app_test.exception
-    assert app_test.caption[0].value == "Модель вернула пустой ответ."
-
-
-def test_ui_defaults_to_latest_experiment_and_sends_names_without_paths(
-    app_test: AppTest, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Свежий last.pt выбирается без ввода пути; переключение само не вызывает генерацию."""
-
-    experiments = [
-        client.ExperimentOptions(
-            experiment_id=name,
-            checkpoints=[
-                client.ExperimentCheckpointOptions(name="last.pt", global_step=step),
-                client.ExperimentCheckpointOptions(name="best.pt", global_step=200),
-            ],
-        )
-        for name, step in (("new", 1036), ("old", 200))
+    checkpoints = [
+        client.ExperimentCheckpointOptions(name="last.pt", global_step=200),
+        client.ExperimentCheckpointOptions(name="best.pt", global_step=100),
+        client.ExperimentCheckpointOptions(name="step_00000100.pt", global_step=100),
     ]
     monkeypatch.setattr(
         client,
         "get_generation_options",
         lambda: client.GenerationOptions(
-            model_id="org/instruct",
+            model_id="Qwen/Qwen3-0.6B",
             before_sft_available=True,
             after_sft_available=True,
-            experiments=experiments,
+            models=[
+                client.PretrainedModelOptions(
+                    model_id="Qwen/Qwen3-0.6B",
+                    before_sft_available=True,
+                    after_sft_available=True,
+                    experiments=[
+                        client.ExperimentOptions(
+                            experiment_id="qwen-v2",
+                            title="QA v2 · run-002",
+                            checkpoints=checkpoints,
+                        )
+                    ],
+                ),
+                client.PretrainedModelOptions(
+                    model_id="Qwen/Qwen2.5-0.5B-Instruct",
+                    before_sft_available=True,
+                    after_sft_available=False,
+                ),
+            ],
+            custom_runs=[
+                client.ExperimentOptions(
+                    experiment_id="custom-v1",
+                    title="Custom v1",
+                    checkpoints=checkpoints,
+                )
+            ],
         ),
     )
-    calls: list[tuple[str | None, str | None]] = []
+    return AppTest.from_file(Path(__file__).parents[2] / "src" / "mini_llm" / "ui" / "app.py").run()
 
-    def generate(
-        prompt: str,
-        backend: ModelBackend,
-        mode: PretrainedMode | None = None,
-        checkpoint_name: str | None = None,
-        pretrained_model_id: str | None = None,
-        experiment_id: str | None = None,
-    ) -> str:
-        calls.append((experiment_id, checkpoint_name))
+
+def test_only_one_exchange_and_no_automatic_generation(
+    chat: AppTest,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[dict[str, object]] = []
+
+    def generate(prompt: str, backend: str, mode: object = None, **kwargs: object) -> str:
+        calls.append({"prompt": prompt, "backend": backend, "mode": mode, **kwargs})
+        return "Ответ: " + prompt
+
+    monkeypatch.setattr(client, "generate_reply", generate)
+    assert not chat.exception and not calls
+    assert len(chat.selectbox) == 3
+    chat.chat_input[0].set_value("Привет").run()
+    assert not chat.exception
+    assert [item.value for item in chat.text] == ["Привет", "Ответ: Привет"]
+    chat.chat_input[0].set_value("Ещё вопрос").run()
+    assert len(chat.chat_message) == 2 and len(calls) == 2
+    chat.selectbox[0].select("Qwen/Qwen3-0.6B").run()
+    assert len(calls) == 2 and not chat.chat_message
+
+
+@pytest.mark.parametrize("checkpoint", ["last.pt", "best.pt", "step_00000100.pt"])
+def test_qwen_selects_run_and_checkpoint_without_paths(
+    chat: AppTest,
+    monkeypatch: pytest.MonkeyPatch,
+    checkpoint: str,
+) -> None:
+    calls: list[dict[str, object]] = []
+
+    def generate(prompt: str, backend: str, mode: object = None, **kwargs: object) -> str:
+        calls.append({"backend": backend, "mode": mode, **kwargs})
         return "Ответ"
 
     monkeypatch.setattr(client, "generate_reply", generate)
-    app_test.selectbox[0].select("pretrained").run()
-    assert not app_test.exception
-    assert app_test.radio[0].value == "custom_checkpoint"
-    assert app_test.selectbox[1].value == "new"
-    assert app_test.selectbox[2].value == "last.pt"
-    assert not app_test.text_input
-    assert not calls
-    assert any("checkpoints/runs/new/last.pt" in item.value for item in app_test.caption)
-    app_test.chat_input[0].set_value("Тест").run()
-    assert not app_test.exception
-    assert calls == [("new", "last.pt")]
-    app_test.selectbox[2].select("best.pt").run()
-    app_test.chat_input[0].set_value("Другой checkpoint").run()
-    assert calls[-1] == ("new", "best.pt")
-    app_test.selectbox[1].select("old").run()
-    assert not app_test.exception
-    assert len(calls) == 2
-    app_test.radio[0].set_value("before_sft").run()
-    assert len(app_test.selectbox) == 1
-    app_test.chat_input[0].set_value("Без SFT").run()
-    assert calls == [("new", "last.pt"), ("new", "best.pt"), (None, None)]
+    chat.selectbox[0].select("Qwen/Qwen3-0.6B").run()
+    assert not chat.exception and not chat.radio
+    assert chat.selectbox[1].value == "qwen-v2"
+    chat.selectbox[2].select(checkpoint).run()
+    chat.chat_input[0].set_value("Привет").run()
+    assert calls == [
+        {
+            "backend": "pretrained",
+            "mode": "custom_checkpoint",
+            "checkpoint_name": checkpoint,
+            "pretrained_model_id": "Qwen/Qwen3-0.6B",
+            "experiment_id": "qwen-v2",
+        }
+    ]
 
 
-@pytest.mark.parametrize(
-    "reply",
-    [">>123\nОтвет **без Markdown**\n\nВторая строка", "<b>Текст</b> и `код` 😄"],
-)
-def test_ui_displays_model_reply_as_literal_text(
-    app_test: AppTest, monkeypatch: pytest.MonkeyPatch, reply: str
-) -> None:
-    """Ссылки на посты и разметка не должны превращаться в цитаты или HTML."""
+def test_base_model_and_models_without_runs(chat: AppTest, monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[object] = []
 
-    def generate(prompt: str, backend: ModelBackend) -> str:
-        return reply
+    def generate(prompt: str, backend: str, mode: object = None, **kwargs: object) -> str:
+        calls.append(mode)
+        assert kwargs["checkpoint_name"] is None and kwargs["experiment_id"] is None
+        return "Привет!"
 
     monkeypatch.setattr(client, "generate_reply", generate)
-    app_test.chat_input[0].set_value("Вопрос").run()
-    assert not app_test.exception
-    assert [block.value for block in app_test.markdown] == ["Вопрос"]
-    assert [block.value for block in app_test.text] == [reply]
+    chat.selectbox[0].select("Qwen/Qwen3-0.6B").run()
+    chat.selectbox[1].select("").run()
+    assert len(chat.selectbox) == 2
+    chat.chat_input[0].set_value("Тест").run()
+    chat.selectbox[0].select("Qwen/Qwen2.5-0.5B-Instruct").run()
+    assert not chat.exception and len(chat.selectbox) == 2
+    chat.chat_input[0].set_value("Тест").run()
+    assert calls == ["before_sft", "before_sft"]
 
 
-def test_ui_recovers_cached_client_without_custom_runs(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Воспроизвести обновление app.py при оставшемся в памяти старом client.py."""
+@pytest.mark.parametrize("reply", [">>123\nОтвет **без Markdown**", "<b>Текст</b> 😄", ""])
+def test_literal_model_output(chat: AppTest, monkeypatch: pytest.MonkeyPatch, reply: str) -> None:
+    monkeypatch.setattr(client, "generate_reply", lambda *args, **kwargs: reply)
+    chat.chat_input[0].set_value("Тест").run()
+    assert not chat.exception
+    assert chat.text[-1].value == (reply or "Пустой ответ")
+    assert not chat.markdown
 
-    import json
 
-    pytest.importorskip("streamlit")
-    from streamlit.testing.v1 import AppTest
+def test_api_failure_is_shown_without_crash(chat: AppTest, monkeypatch: pytest.MonkeyPatch) -> None:
+    def fail() -> client.GenerationOptions:
+        raise client.GenerationAPIError("API недоступен")
 
-    class OldOptions(BaseModel):
-        model_id: str = "org/instruct"
-        before_sft_available: bool = True
-        after_sft_available: bool = False
+    monkeypatch.setattr(client, "get_generation_options", fail)
+    chat.run()
+    assert not chat.exception
+    assert chat.error[0].value == "API недоступен"
+    assert not chat.chat_input
 
-    monkeypatch.setattr(client, "UI_CLIENT_VERSION", 1)
-    monkeypatch.setattr(client, "GenerationOptions", OldOptions)
 
-    def get(*args: object, **kwargs: object) -> requests.Response:
-        response = requests.Response()
-        response.status_code = 200
-        response._content = json.dumps(
-            {
-                "model_id": "org/instruct",
-                "before_sft_available": True,
-                "after_sft_available": False,
-                "custom_runs": [
-                    {
-                        "experiment_id": "custom-v1",
-                        "title": "Custom / v1",
-                        "checkpoints": [{"name": "last.pt", "global_step": 10}],
-                    }
-                ],
-            }
-        ).encode()
-        return response
-
-    monkeypatch.setattr(requests.Session, "get", get)
-    app = AppTest.from_file(Path(__file__).parents[2] / "src/mini_llm/ui/app.py").run()
-    assert not app.exception
-    assert "custom_runs" in client.GenerationOptions.model_fields
-    assert app.selectbox[1].value == "custom-v1"
-    app.run()
-    assert not app.exception
+def test_no_weights_disables_chat(chat: AppTest, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        client,
+        "get_generation_options",
+        lambda: client.GenerationOptions(
+            model_id="",
+            before_sft_available=False,
+            after_sft_available=False,
+        ),
+    )
+    chat.run()
+    assert not chat.exception and chat.chat_input[0].disabled

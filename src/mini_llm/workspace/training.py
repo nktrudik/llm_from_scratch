@@ -52,6 +52,9 @@ class TrainingParameters(BaseModel):
     max_validation_samples: int | None = Field(default=None, ge=1)
     mixed_precision: bool = True
     device: Literal["cuda", "cpu"] = "cuda"
+    pretrained_engine: Literal["transformers", "unsloth"] = "transformers"
+    lora_rank: int = Field(default=8, ge=1)
+    lora_alpha: int = Field(default=16, ge=1)
 
     @model_validator(mode="after")
     def duration(self) -> Self:
@@ -145,8 +148,24 @@ def validate_training_request(request: ManagedTrainingRequest) -> None:
         from mini_llm.inference.checkpoints import resolve_named_checkpoint
 
         resolve_named_checkpoint(parent.directory, request.checkpoint_name)
+        if request.model_id != "custom":
+            from mini_llm.training.sft.checkpoints import resolve_sft_resume
+
+            resolve_sft_resume(resolve_named_checkpoint(parent.directory, request.checkpoint_name))
+            if parent.training_config.get("learning_rate") != request.parameters.learning_rate:
+                raise ValueError("Native TRL resume требует исходный learning_rate")
+            if (
+                parent.training_config.get("pretrained_engine", "transformers")
+                != request.parameters.pretrained_engine
+            ):
+                raise ValueError("При resume сохраните исходный pretrained_engine")
         if parent.pretrained_config_file:
             original = PretrainedConfig.load(parent.pretrained_config_file)
+            if (request.parameters.lora_rank, request.parameters.lora_alpha) != (
+                original.lora_rank,
+                original.lora_alpha,
+            ):
+                raise ValueError("При resume сохраните исходные LoRA rank/alpha")
             if request.parameters.max_sequence_length != original.max_sequence_length:
                 raise ValueError("При resume сохраните исходный max_sequence_length")
             if request.parameters.gradient_checkpointing not in (
@@ -227,6 +246,14 @@ def train_versioned_config(
             config, checkpoint_dir=run.directory, pretrained_config_file=run.pretrained_config_file
         )
         run.training_config = training_config_payload(active)
+        if base:
+            run.training_config.update(
+                trainer="trl",
+                max_sequence_length=base.max_sequence_length,
+                gradient_checkpointing=base.gradient_checkpointing,
+                lora_rank=base.lora_rank,
+                lora_alpha=base.lora_alpha,
+            )
         run.training_config["split_sha256"] = hashes
         run.save()
         result = train_model(active)
@@ -253,7 +280,7 @@ def run_managed_training(request: ManagedTrainingRequest, job_id: str) -> dict[s
     parent = get_run(request.parent_run_id) if request.parent_run_id else None
     registration = load_registered_model(request.model_id) if request.model_id != "custom" else None
     values = request.parameters.model_dump(
-        exclude={"max_sequence_length", "gradient_checkpointing"}
+        exclude={"max_sequence_length", "gradient_checkpointing", "lora_rank", "lora_alpha"}
     )
     values.update(
         splits_dir=dataset.directory / "splits",
@@ -269,7 +296,11 @@ def run_managed_training(request: ManagedTrainingRequest, job_id: str) -> dict[s
         if path is None:
             raise ValueError("Не найден конфиг модели")
         base = PretrainedConfig.load(path).model_copy(
-            update={"max_sequence_length": request.parameters.max_sequence_length}
+            update={
+                "max_sequence_length": request.parameters.max_sequence_length,
+                "lora_rank": request.parameters.lora_rank,
+                "lora_alpha": request.parameters.lora_alpha,
+            }
         )
         if request.parameters.gradient_checkpointing is not None:
             base = base.model_copy(

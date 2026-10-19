@@ -76,7 +76,7 @@ def test_catalog_filters_incompatible_checkpoints_and_orders_latest_first(
     for field, value in (
         ("model_id", "Qwen/Qwen2.5-0.5B-Instruct"),
         ("revision", "b" * 40),
-        ("lora_rank", 8),
+        ("lora_rank", 16),
     ):
         save_marker(registered_config.model_copy(update={field: value}), field, "last.pt", 999)
     newer.parent.joinpath("broken.pt").write_bytes(b"invalid checkpoint")
@@ -125,7 +125,7 @@ def test_generation_uses_selected_experiment_instead_of_registered_directory(
 def test_wrong_or_missing_experiment_fails_without_model_loading(
     registered_config: PretrainedConfig, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    wrong_config = registered_config.model_copy(update={"lora_rank": 8})
+    wrong_config = registered_config.model_copy(update={"lora_rank": 16})
     save_marker(wrong_config, "wrong", "last.pt", 200)
 
     def unexpected_generation(*args: object, **kwargs: object) -> GenerationResult:

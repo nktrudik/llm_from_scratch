@@ -69,25 +69,16 @@ def _watch_operation(job_id: str) -> None:
 def _delete_target(model: ManagedModel) -> DeletionTarget | None:
     scope = st.radio(
         "Что удалить",
-        ["checkpoint", "run", "model"],
-        index=1 if model.runs else 2,
+        ["run", "model"],
+        index=0 if model.runs else 1,
         format_func=lambda value: {
-            "checkpoint": "Один checkpoint",
             "run": "Один запуск целиком",
             "model": "Вся модель и её запуски",
         }[value],
         key=f"delete_scope_{model.model_id}",
     )
     if scope == "model":
-        include_cache = (
-            False
-            if model.model_id == "custom"
-            else st.checkbox(
-                "Также удалить скачанные базовые веса и tokenizer из HF cache",
-                value=True,
-                key=f"delete_cache_{model.model_id}",
-            )
-        )
+        include_cache = model.model_id != "custom"
         if model.model_id == "custom":
             st.caption(
                 "У Custom удаляются только запуски/checkpoints. Код и общий BPE сохраняются."
@@ -103,15 +94,7 @@ def _delete_target(model: ManagedModel) -> DeletionTarget | None:
         format_func=lambda value: runs[value].title,
         key=f"delete_run_{model.model_id}",
     )
-    if scope == "run":
-        return DeletionTarget(scope="run", run_id=run_id)
-    if not runs[run_id].checkpoints:
-        st.info("В этом запуске нет checkpoints.")
-        return None
-    name = st.selectbox(
-        "Checkpoint для удаления", runs[run_id].checkpoints, key=f"delete_checkpoint_{run_id}"
-    )
-    return DeletionTarget(scope="checkpoint", run_id=run_id, checkpoint_name=name)
+    return DeletionTarget(scope="run", run_id=run_id)
 
 
 def _render_deletion(model: ManagedModel, busy: bool) -> None:
@@ -180,11 +163,6 @@ def render_models() -> None:
     with st.form("download_hf_model"):
         model_id = st.text_input("Hugging Face model ID", placeholder="Qwen/Qwen3-0.6B")
         download = st.form_submit_button("Загрузить модель", disabled=busy)
-    st.caption(
-        "Нужен ID decoder-only модели. Сервер скачает файлы, закрепит commit и создаст "
-        "QLoRA-конфиг. GPU и обучение при загрузке не используются; "
-        "gated-модели требуют настроенной авторизации HF."
-    )
     if download:
         if not model_id.strip():
             st.error("Укажите Hugging Face model ID")
@@ -218,8 +196,6 @@ def render_models() -> None:
         ),
     )
     model = models[selected]
-    if model.active:
-        st.caption("Активная pretrained-модель по умолчанию")
     if model.model_id == "custom":
         st.write("Собственная архитектура. Для генерации нужен обученный запуск.")
     elif not model.registered:
@@ -233,14 +209,5 @@ def render_models() -> None:
             if model.available
             else "Файлы не найдены; модель можно загрузить заново"
         )
-    if model.revision:
-        st.caption(f"Revision: {model.revision}")
-    if model.config_file:
-        st.caption(f"Конфиг: {model.config_file}")
-    if model.snapshot_path:
-        st.caption(f"Файлы: {model.snapshot_path}")
-    st.caption(
-        "Объём относится к диску, не VRAM. Не запускайте внешние CLI-процессы "
-        "с этими файлами во время очистки."
-    )
-    _render_deletion(model, busy)
+    with st.expander("Удаление"):
+        _render_deletion(model, busy)
