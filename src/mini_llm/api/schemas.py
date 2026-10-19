@@ -22,6 +22,7 @@ from mini_llm.inference.experiments import experiment_directory, resolve_experim
 from mini_llm.modeling.config import DEFAULT_MAX_SEQUENCE_LENGTH
 from mini_llm.observability.training import TrainingProgress
 from mini_llm.pretrained import PretrainedConfig
+from mini_llm.pretrained.management.schemas import OperationProgress
 from mini_llm.pretrained.workspace import load_active_model, load_registered_model
 from mini_llm.tokenization.config import DEFAULT_TOKENIZER_PATH
 from mini_llm.training import PretrainedTrainingConfig, TrainingConfig
@@ -47,6 +48,7 @@ class JobResponse(BaseModel):
     result: object | None = None
     error: str | None = None
     progress: TrainingProgress | None = None
+    operation_progress: OperationProgress | None = None
 
 
 class TrainingRequest(BaseModel):

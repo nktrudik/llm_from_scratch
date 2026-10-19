@@ -73,7 +73,9 @@ def render_chat() -> None:
                 default_index = (
                     model_ids.index(options.model_id) if options.model_id in model_ids else 0
                 )
-                pretrained_model_id = st.selectbox("Модель Qwen", model_ids, index=default_index)
+                pretrained_model_id = st.selectbox(
+                    "Модель Hugging Face", model_ids, index=default_index
+                )
             availability = next(
                 (item for item in options.models if item.model_id == pretrained_model_id), options
             )
@@ -87,7 +89,7 @@ def render_chat() -> None:
                     modes.append("after_sft")
                 modes.append("custom_checkpoint")
             mode = st.radio(
-                "Режим Qwen",
+                "Режим модели",
                 modes,
                 key=f"qwen_mode_{availability.model_id}"
                 + ("_experiments" if availability.experiments else ""),
@@ -178,11 +180,15 @@ def main() -> None:
     """Переключать чат и обучение, не запуская pipeline при открытии страницы."""
 
     st.set_page_config(page_title="Mini LLM", page_icon="💬", layout="centered")
-    page = st.segmented_control("Раздел", ["Чат", "Обучение"], default="Чат")
+    page = st.segmented_control("Раздел", ["Чат", "Обучение", "Модели"], default="Чат")
     if page == "Обучение":
         from mini_llm.ui.training import render_training
 
         render_training()
+    elif page == "Модели":
+        from mini_llm.ui.models import render_models
+
+        render_models()
     else:
         render_chat()
 

@@ -20,6 +20,8 @@ def test_ui_has_an_isolated_streamlit_entrypoint() -> None:
         "client.py",
         "config.py",
         "http.py",
+        "models.py",
+        "models_client.py",
         "progress.py",
         "training.py",
         "training_client.py",

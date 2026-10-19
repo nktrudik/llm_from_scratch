@@ -1,7 +1,7 @@
 # Mini LLM / НейроДвач
 
 Локальный учебный проект: собственный Transformer и fine-tuning Hugging Face моделей
-(full / LoRA / QLoRA), FastAPI и Streamlit. Интерфейс: **Чат** и **Обучение**.
+(full / LoRA / QLoRA), FastAPI и Streamlit. Интерфейс: **Чат**, **Обучение**, **Модели**.
 Response-only loss, non-thinking chat template, checkpoints/resume, AMP и GPU telemetry.
 Custom: 4 блока, d_model=256, 4 heads, FFN=1024, vocab=8192, tied embeddings, context=1024.
 
@@ -18,6 +18,10 @@ uv sync --extra dev --extra pretrained --extra ui
 UI: http://127.0.0.1:8501 · Swagger: http://127.0.0.1:8000/docs.
 Другой API: задайте `$env:MINI_LLM_API_URL="http://127.0.0.1:8000"` перед запуском UI.
 В чате выберите модель → версию/запуск → checkpoint. До SFT используется базовая модель.
+Во вкладке «Модели» введите HF model ID: файлы, tokenizer и конфиг сохранятся автоматически.
+Там же можно удалить checkpoint, запуск или всю модель с HF cache: сначала план, затем
+подтверждение «УДАЛИТЬ». Очистка необратима; датасеты, код и общий BPE сохраняются.
+Загрузка/очистка используют общую очередь и заблокированы во время генерации/обучения.
 Во вкладке обучения выберите датасет, модель, параметры и нажмите «Запустить обучение».
 Новая папка `data/datasets/<id>/vN/samples.jsonl` обнаруживается при открытии страницы
 или по кнопке «Обновить список датасетов». Backend сохраняет количество samples и SHA256

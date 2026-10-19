@@ -1,6 +1,6 @@
 {
-  "model_id": "Qwen/Qwen2.5-0.5B-Instruct",
-  "revision": "7ae557604adf67be50417f59c2c2f167def9a775",
+  "model_id": "Qwen/Qwen3-1.7B-Base",
+  "revision": "ea980cb0a6c2ae4b936e82123acc929f1cec04c1",
   "cache_dir": ".cache\\huggingface",
   "adaptation_mode": "qlora",
   "torch_dtype": "bfloat16",

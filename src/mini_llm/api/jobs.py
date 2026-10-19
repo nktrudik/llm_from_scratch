@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from threading import Lock
@@ -28,6 +29,7 @@ class JobRecord:
     finished_at: str | None = None
     result: object | None = None
     error: str | None = None
+    operation_progress: dict[str, object] | None = None
 
     def to_dict(self) -> dict[str, object]:
         """Вернуть независимый JSON-совместимый снимок состояния."""
@@ -40,22 +42,45 @@ class JobManager:
 
     def __init__(self) -> None:
         self._lock = Lock()
+        self._generation_lock = Lock()
         self._jobs: dict[str, JobRecord] = {}
         self._active_job_id: str | None = None
 
     def create(self, kind: str) -> JobRecord:
         """Создать queued-задачу, если другой pipeline сейчас не активен."""
 
-        with self._lock:
-            if self._active_job_id is not None:
+        if not self._generation_lock.acquire(blocking=False):
+            raise JobAlreadyRunningError("Сейчас выполняется генерация; дождитесь её завершения")
+        try:
+            with self._lock:
+                if self._active_job_id is not None:
+                    raise JobAlreadyRunningError(
+                        f"Уже выполняется задача {self._active_job_id}; дождитесь её завершения"
+                    )
+                job_id = uuid4().hex
+                record = JobRecord(job_id, kind, "queued", datetime.now(UTC).isoformat())
+                self._jobs[job_id] = record
+                self._active_job_id = job_id
+                return record
+        finally:
+            self._generation_lock.release()
+
+    @contextmanager
+    def generation(self) -> Iterator[None]:
+        """Не разрешать удаление файлов между проверкой занятости и генерацией."""
+
+        with self._generation_lock:
+            if self.active_job_id() is not None:
                 raise JobAlreadyRunningError(
-                    f"Уже выполняется задача {self._active_job_id}; дождитесь её завершения"
+                    "Генерация недоступна, пока выполняется фоновая задача"
                 )
-            job_id = uuid4().hex
-            record = JobRecord(job_id, kind, "queued", datetime.now(UTC).isoformat())
-            self._jobs[job_id] = record
-            self._active_job_id = job_id
-            return record
+            yield
+
+    def report_operation(self, job_id: str, progress: dict[str, object]) -> None:
+        """Обновить лёгкий статус скачивания/очистки без весов и больших объектов."""
+
+        with self._lock:
+            self._jobs[job_id].operation_progress = dict(progress)
 
     def run(self, job_id: str, operation: Callable[[], object]) -> None:
         """Выполнить операцию и сохранить её результат или диагностическую ошибку."""

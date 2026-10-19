@@ -8,6 +8,7 @@ from dataclasses import asdict
 from fastapi import BackgroundTasks, FastAPI, HTTPException, status
 
 from mini_llm.api.jobs import JobAlreadyRunningError, JobManager
+from mini_llm.api.models import create_model_router
 from mini_llm.api.schemas import (
     DatasetSplitRequest,
     ExperimentOptionsResponse,
@@ -55,6 +56,7 @@ app = FastAPI(
     version="0.1.0",
 )
 job_manager = JobManager()
+app.include_router(create_model_router(job_manager))
 
 
 @app.get("/v1/workspace")
@@ -301,7 +303,10 @@ def generate(request: GenerationRequest) -> GenerationResponse:
             detail=f"Генерация недоступна, пока выполняется задача {active_job_id}",
         )
     try:
-        result = generate_response(request.prompt, request.to_config())
+        with job_manager.generation():
+            result = generate_response(request.prompt, request.to_config())
+    except JobAlreadyRunningError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
     except (OSError, RuntimeError, ValueError) as error:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)) from error
     return GenerationResponse(text=result.text, token_ids=result.token_ids)

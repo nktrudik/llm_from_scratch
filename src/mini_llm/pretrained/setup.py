@@ -22,6 +22,7 @@ def setup_pretrained_model(
     torch_dtype: TorchDType | None = None,
     max_sequence_length: int = 512,
     gradient_checkpointing: bool | None = None,
+    on_stage: Callable[[str], None] | None = None,
 ) -> ModelRegistration:
     """Скачать файлы, проверить tokenizer и зарегистрировать модель; SFT не запускать."""
 
@@ -39,8 +40,12 @@ def setup_pretrained_model(
         ),
         local_files_only=True,
     )
+    if on_stage:
+        on_stage("Загрузка модели и tokenizer из Hugging Face в локальный cache")
     snapshot = download_model_snapshot(model_id, revision, cache_dir)
     config = config.model_copy(update={"revision": snapshot.revision})
+    if on_stage:
+        on_stage("Проверка архитектуры и tokenizer без загрузки модели в GPU")
     transformers = require_module("transformers")
     load_config = cast(Callable[..., object], transformers.AutoConfig.from_pretrained)
     model_config = load_config(str(snapshot.path), local_files_only=True, trust_remote_code=False)
@@ -62,6 +67,8 @@ def setup_pretrained_model(
                 "Конфиг не перезаписан: выберите другой режим "
                 "или сохраните старые артефакты отдельно."
             )
+    if on_stage:
+        on_stage("Сохранение закреплённого конфига и регистрация модели")
     config.save(paths.config_file)
     paths.checkpoint_dir.mkdir(parents=True, exist_ok=True)
     registration = ModelRegistration(

@@ -6,7 +6,7 @@ from typing import Literal
 ModelBackend = Literal["custom", "pretrained"]
 PretrainedMode = Literal["before_sft", "after_sft", "custom_checkpoint"]
 MODEL_BACKENDS: tuple[ModelBackend, ...] = ("custom", "pretrained")
-MODEL_LABELS = {"custom": "Custom", "pretrained": "Qwen"}
+MODEL_LABELS = {"custom": "Custom", "pretrained": "Hugging Face"}
 MODE_LABELS = {
     "before_sft": "До SFT — исходная модель",
     "after_sft": "После SFT — best checkpoint",

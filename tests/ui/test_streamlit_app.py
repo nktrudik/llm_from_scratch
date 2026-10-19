@@ -108,7 +108,7 @@ def test_ui_qwen_after_sft_is_unselectable_without_best_checkpoint(
             reason="После SFT недоступен: best.pt ещё не создан.",
         ),
     )
-    assert app_test.selectbox[0].options == ["Custom", "Qwen"]
+    assert app_test.selectbox[0].options == ["Custom", "Hugging Face"]
     app_test.selectbox[0].select("pretrained").run()
     assert not app_test.exception
     assert app_test.radio[0].options == ["До SFT — исходная модель", "Свой чекпоинт"]
