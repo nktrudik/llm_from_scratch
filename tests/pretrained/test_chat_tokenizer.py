@@ -196,8 +196,10 @@ class PromptRecordingModel(nn.Module):
         super().__init__()
         self.anchor = nn.Parameter(torch.zeros(1))
         self.input_ids: Tensor | None = None
+        self.generation_kwargs: dict[str, object] = {}
 
     def generate(self, **kwargs: object) -> Tensor:
+        self.generation_kwargs = kwargs
         input_ids = kwargs["input_ids"]
         assert isinstance(input_ids, Tensor)
         self.input_ids = input_ids.clone()
@@ -228,6 +230,11 @@ def test_generation_adds_system_role_only_for_qwen(model_id: str, use_system: bo
     assert backend.calls == [(True, False)]
     assert result.text == "a"
     assert result.token_ids == [ord("a") + 100]
+    if use_system:
+        assert model.generation_kwargs["repetition_penalty"] == 1.1
+    else:
+        assert "repetition_penalty" not in model.generation_kwargs
+    assert model.generation_kwargs["eos_token_id"] == 2
     sample = DialogueSample(
         "b",
         1,
@@ -247,6 +254,87 @@ def test_system_prompt_without_native_template_is_not_silently_ignored() -> None
     tokenizer = HuggingFaceDialogueTokenizer(backend)
     with pytest.raises(RuntimeError, match="native chat template"):
         tokenizer.encode_prompt("Привет", system_prompt=QWEN_SYSTEM_PROMPT)
+
+
+class MessageEndTokenizer(ChatTokenizer):
+    """Имитировать разные ID конца документа и конца сообщения у Qwen Base."""
+
+    def encode(self, text: str, *, add_special_tokens: bool) -> list[int]:
+        if text == "<|im_end|>":
+            return [3]
+        return super().encode(text, add_special_tokens=add_special_tokens)
+
+    def decode(self, tokens: Sequence[int], *, skip_special_tokens: bool) -> str:
+        if list(tokens) == [3]:
+            return "" if skip_special_tokens else "<|im_end|>"
+        return super().decode(tokens, skip_special_tokens=skip_special_tokens)
+
+
+class StopRecordingModel(PromptRecordingModel):
+    """Проверить переданные stop IDs без настоящей генерации и загрузки весов."""
+
+    def __init__(self, suffix: list[int]) -> None:
+        super().__init__()
+        self.suffix = suffix
+
+    def generate(self, **kwargs: object) -> Tensor:
+        super().generate(**kwargs)
+        assert self.input_ids is not None
+        return torch.cat((self.input_ids, torch.tensor([self.suffix])), dim=1)
+
+
+@pytest.mark.parametrize("stop_id", [2, 3])
+def test_qwen_stops_on_document_or_message_end_and_removes_trailing_tokens(stop_id: int) -> None:
+    tokenizer = HuggingFaceDialogueTokenizer(MessageEndTokenizer())
+    model = StopRecordingModel([197, stop_id, 198, 3])
+    prepared = PreparedPretrained(
+        HuggingFaceCausalLMBackend(model, PretrainedConfig(model_id="Qwen/Qwen3-1.7B-Base")),
+        tokenizer,
+    )
+    result = generate_pretrained(prepared, "Привет")
+    assert model.generation_kwargs["eos_token_id"] == [2, 3]
+    assert model.generation_kwargs["repetition_penalty"] == 1.1
+    assert result.text == "a"
+    assert result.token_ids == [197]
+
+
+def test_qwen_does_not_duplicate_eos_for_instruct_tokenizer() -> None:
+    backend = MessageEndTokenizer()
+    backend.eos_token_id = 3
+    model = StopRecordingModel([197, 3])
+    prepared = PreparedPretrained(
+        HuggingFaceCausalLMBackend(model, PretrainedConfig(model_id="Qwen/Qwen2.5-Instruct")),
+        HuggingFaceDialogueTokenizer(backend),
+    )
+    assert generate_pretrained(prepared, "Привет").token_ids == [197]
+    assert model.generation_kwargs["eos_token_id"] == 3
+
+
+def test_other_models_do_not_receive_qwen_generation_settings() -> None:
+    model = StopRecordingModel([197, 3, 198, 2])
+    prepared = PreparedPretrained(
+        HuggingFaceCausalLMBackend(model, PretrainedConfig(model_id="org/other-model")),
+        HuggingFaceDialogueTokenizer(MessageEndTokenizer()),
+    )
+    assert generate_pretrained(prepared, "Привет").token_ids == [197, 3, 198]
+    assert model.generation_kwargs["eos_token_id"] == 2
+    assert "repetition_penalty" not in model.generation_kwargs
+
+
+def test_qwen_does_not_stop_on_unknown_token() -> None:
+    class UnknownMarkerTokenizer(MessageEndTokenizer):
+        def decode(self, tokens: Sequence[int], *, skip_special_tokens: bool) -> str:
+            if list(tokens) == [3]:
+                return "<unk>"
+            return super().decode(tokens, skip_special_tokens=skip_special_tokens)
+
+    model = StopRecordingModel([197, 2])
+    prepared = PreparedPretrained(
+        HuggingFaceCausalLMBackend(model, PretrainedConfig(model_id="Qwen/Qwen3")),
+        HuggingFaceDialogueTokenizer(UnknownMarkerTokenizer()),
+    )
+    assert generate_pretrained(prepared, "Привет").token_ids == [197]
+    assert model.generation_kwargs["eos_token_id"] == 2
 
 
 @pytest.mark.parametrize("native_template", [True, False])

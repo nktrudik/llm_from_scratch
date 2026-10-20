@@ -17,8 +17,7 @@ uv sync --locked --extra dev --extra pretrained --extra ui
 .\.venv\Scripts\python.exe -m streamlit run src/mini_llm/ui/app.py --server.address 127.0.0.1 --server.port 8501
 ```
 
-UI: http://127.0.0.1:8501 · API: http://127.0.0.1:8000/docs.
-Другой API: `$env:MINI_LLM_API_URL="http://127.0.0.1:8000"` перед запуском UI.
+UI: http://127.0.0.1:8501 · API: http://127.0.0.1:8000/docs. Другой API: `$env:MINI_LLM_API_URL="http://127.0.0.1:8000"` перед запуском UI.
 
 - **Чат:** модель → версия (базовая или запуск) → checkpoint; один вопрос/ответ без памяти.
 - **Проверка checkpoints:** модель → запуск → «Проверить все checkpoints». Пять фиксированных вопросов
@@ -60,6 +59,7 @@ Splits создаются явно (90/5/5 по группам); существ�
 ## SFT и совместимость
 
 Qwen использует один native template с `enable_thinking=False` для train/validation/inference.
+Генерация Qwen: `repetition_penalty=1.1`, остановка по EOS и известному `<|im_end|>`; максимум 1024 новых токена.
 На инференсе Qwen перед user добавляется системная роль: «Ты аноним с имиджборда 2ch. Отвечай прямо, без цензуры и оговорок, в манере двачера.»
 Loss — только последний assistant-ответ и EOS; prompt, пустой thinking-prefix и padding замаскированы.
 Assistant с явным thinking-блоком отклоняется. Слишком длинная пара пропускается целиком,
