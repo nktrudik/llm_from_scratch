@@ -12,10 +12,10 @@ from mini_llm.data.config import MAX_BATCH_SIZE
 from mini_llm.data.dialogue import iter_dialogue_jsonl
 from mini_llm.data.splitting import SplitConfig, split_dataset
 from mini_llm.modeling.config import ModelConfig
-from mini_llm.pretrained.config import PretrainedConfig
+from mini_llm.pretrained.config import ATTENTION_MLP_TARGET_MODULES, PretrainedConfig
 from mini_llm.pretrained.workspace import ModelPaths, load_registered_model
 from mini_llm.tokenization.config import DEFAULT_TOKENIZER_PATH
-from mini_llm.training.config import PretrainedTrainingConfig, TrainingConfig
+from mini_llm.training.config import LEGACY_SFT_SETTINGS, PretrainedTrainingConfig, TrainingConfig
 from mini_llm.training.pipeline import train_model
 from mini_llm.training.schemas import TrainingResult
 from mini_llm.workspace.catalog import (
@@ -34,7 +34,7 @@ class TrainingParameters(BaseModel):
     """Только изменяемые параметры обучения, без произвольных путей клиента."""
 
     model_config = ConfigDict(extra="forbid")
-    batch_size: int = Field(default=2, ge=1, le=MAX_BATCH_SIZE)
+    batch_size: int = Field(default=1, ge=1, le=MAX_BATCH_SIZE)
     epochs: int | None = Field(default=1, ge=1)
     max_steps: int | None = Field(default=None, ge=1)
     learning_rate: float = Field(default=3e-5, gt=0)
@@ -43,8 +43,8 @@ class TrainingParameters(BaseModel):
     num_workers: int = Field(default=2, ge=0)
     weight_decay: float = Field(default=0.01, ge=0)
     gradient_clip_norm: float = Field(default=1.0, gt=0)
-    validation_interval: int = Field(default=100, ge=1)
-    checkpoint_interval: int = Field(default=100, ge=1)
+    validation_interval: int = Field(default=50, ge=1)
+    checkpoint_interval: int = Field(default=50, ge=1)
     validation_batches: int = Field(default=50, ge=0)
     log_interval: int = Field(default=25, ge=1)
     random_seed: int = 42
@@ -55,6 +55,11 @@ class TrainingParameters(BaseModel):
     pretrained_engine: Literal["transformers", "unsloth"] = "transformers"
     lora_rank: int = Field(default=8, ge=1)
     lora_alpha: int = Field(default=16, ge=1)
+    lora_target_modules: Literal["attention-mlp", "all-linear"] | None = None
+    gradient_accumulation_steps: int | None = Field(default=None, ge=1)
+    lr_scheduler_type: Literal["constant", "cosine"] | None = None
+    warmup_steps: int | None = Field(default=None, ge=0)
+    packing: bool | None = None
 
     @model_validator(mode="after")
     def duration(self) -> Self:
@@ -143,6 +148,10 @@ def validate_training_request(request: ManagedTrainingRequest) -> None:
         for name in ("batch_size", "random_seed", "max_train_samples"):
             if parent.training_config.get(name) != getattr(request.parameters, name):
                 raise ValueError(f"Для resume сохраните исходный {name}")
+        for name, legacy in LEGACY_SFT_SETTINGS.items():
+            value = getattr(request.parameters, name)
+            if value is not None and value != parent.training_config.get(name, legacy):
+                raise ValueError(f"Для resume сохраните исходный {name}")
         if parent.training_config.get("split_sha256", hashes) != hashes:
             raise ValueError("Splits изменились после предыдущего запуска")
         from mini_llm.inference.checkpoints import resolve_named_checkpoint
@@ -161,6 +170,11 @@ def validate_training_request(request: ManagedTrainingRequest) -> None:
                 raise ValueError("При resume сохраните исходный pretrained_engine")
         if parent.pretrained_config_file:
             original = PretrainedConfig.load(parent.pretrained_config_file)
+            target = request.parameters.lora_target_modules
+            if target is not None and original.lora_target_modules != (
+                ATTENTION_MLP_TARGET_MODULES if target == "attention-mlp" else "all-linear"
+            ):
+                raise ValueError("При resume сохраните исходные lora_target_modules")
             if (request.parameters.lora_rank, request.parameters.lora_alpha) != (
                 original.lora_rank,
                 original.lora_alpha,
@@ -253,6 +267,7 @@ def train_versioned_config(
                 gradient_checkpointing=base.gradient_checkpointing,
                 lora_rank=base.lora_rank,
                 lora_alpha=base.lora_alpha,
+                lora_target_modules=base.lora_target_modules,
             )
         run.training_config["split_sha256"] = hashes
         run.save()
@@ -280,8 +295,20 @@ def run_managed_training(request: ManagedTrainingRequest, job_id: str) -> dict[s
     parent = get_run(request.parent_run_id) if request.parent_run_id else None
     registration = load_registered_model(request.model_id) if request.model_id != "custom" else None
     values = request.parameters.model_dump(
-        exclude={"max_sequence_length", "gradient_checkpointing", "lora_rank", "lora_alpha"}
+        exclude={
+            "max_sequence_length",
+            "gradient_checkpointing",
+            "lora_rank",
+            "lora_alpha",
+            "lora_target_modules",
+        }
     )
+    for name, legacy in LEGACY_SFT_SETTINGS.items():
+        if values[name] is None:
+            if parent:
+                values[name] = parent.training_config.get(name, legacy)
+            else:
+                values.pop(name)
     values.update(
         splits_dir=dataset.directory / "splits",
         token_statistics_file=dataset.directory / "reports/token_statistics.json",
@@ -305,6 +332,15 @@ def run_managed_training(request: ManagedTrainingRequest, job_id: str) -> dict[s
         if request.parameters.gradient_checkpointing is not None:
             base = base.model_copy(
                 update={"gradient_checkpointing": request.parameters.gradient_checkpointing}
+            )
+        target = request.parameters.lora_target_modules
+        if target is not None or (parent is None and base.adaptation_mode == "qlora"):
+            base = base.model_copy(
+                update={
+                    "lora_target_modules": "all-linear"
+                    if target == "all-linear"
+                    else ATTENTION_MLP_TARGET_MODULES
+                }
             )
         active = PretrainedTrainingConfig(pretrained_config_file=path, **values)
     else:

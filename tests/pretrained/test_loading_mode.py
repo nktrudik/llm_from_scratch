@@ -8,7 +8,7 @@ from torch import nn
 
 from mini_llm.pretrained import PretrainedConfig
 from mini_llm.pretrained import model as model_module
-from mini_llm.pretrained.config import TorchDType
+from mini_llm.pretrained.config import ATTENTION_MLP_TARGET_MODULES, TorchDType
 
 
 class TinyTokenizer:
@@ -115,7 +115,7 @@ def test_qlora_compute_dtype_and_lora_parameters_are_preserved(
         "r": 8,
         "lora_alpha": 16,
         "lora_dropout": 0.05,
-        "target_modules": "all-linear",
+        "target_modules": list(ATTENTION_MLP_TARGET_MODULES),
         "bias": "none",
     }
     assert checkpointing == [False]

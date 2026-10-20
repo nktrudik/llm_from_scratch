@@ -9,6 +9,15 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 AdaptationMode = Literal["full", "lora", "qlora"]
 TorchDType = Literal["auto", "float32", "float16", "bfloat16"]
+ATTENTION_MLP_TARGET_MODULES = (
+    "q_proj",
+    "k_proj",
+    "v_proj",
+    "o_proj",
+    "gate_proj",
+    "up_proj",
+    "down_proj",
+)
 
 
 class PretrainedConfig(BaseModel):
@@ -39,7 +48,12 @@ class PretrainedConfig(BaseModel):
         """Подставить профиль QLoRA, сохранив явно заданные старые параметры."""
 
         if isinstance(value, dict) and value.get("adaptation_mode") == "qlora":
-            return {"torch_dtype": "bfloat16", "gradient_checkpointing": False, **value}
+            return {
+                "torch_dtype": "bfloat16",
+                "gradient_checkpointing": False,
+                "lora_target_modules": ATTENTION_MLP_TARGET_MODULES,
+                **value,
+            }
         return value
 
     @model_validator(mode="after")

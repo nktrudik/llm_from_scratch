@@ -27,6 +27,7 @@ def calculate_training_plan(
     *,
     epochs: int | None,
     max_steps: int | None,
+    gradient_accumulation_steps: int = 1,
 ) -> TrainingPlan:
     """Рассчитать план для взаимоисключающих режимов epochs и max_steps."""
 
@@ -34,9 +35,11 @@ def calculate_training_plan(
         raise ValueError("train_samples должен быть положительным")
     if batch_size <= 0:
         raise ValueError("batch_size должен быть положительным")
+    if gradient_accumulation_steps <= 0:
+        raise ValueError("gradient_accumulation_steps должен быть положительным")
     if (epochs is None) == (max_steps is None):
         raise ValueError("Нужно задать ровно один режим: epochs или max_steps")
-    steps_per_epoch = math.ceil(train_samples / batch_size)
+    steps_per_epoch = math.ceil(math.ceil(train_samples / batch_size) / gradient_accumulation_steps)
     if epochs is not None:
         if epochs <= 0:
             raise ValueError("epochs должен быть положительным")

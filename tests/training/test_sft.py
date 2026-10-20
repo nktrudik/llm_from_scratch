@@ -125,6 +125,10 @@ def sft_setup(
         checkpoint_dir=tmp_path / "first",
         pretrained_config_file=tmp_path / "pretrained.json",
         batch_size=2,
+        gradient_accumulation_steps=1,
+        lr_scheduler_type="constant",
+        warmup_steps=0,
+        packing=False,
         epochs=None,
         max_steps=1,
         device="cpu",
@@ -223,7 +227,10 @@ def test_sft_defaults_and_job_stop() -> None:
     args = sft_arguments(PretrainedTrainingConfig(pretrained_config_file=Path("model.json")), base)
     assert (base.lora_rank, base.lora_alpha) == (8, 16)
     assert args["bf16"] and not args["fp16"]
-    assert args["optim"] == "adamw_8bit" and not args["packing"]
+    assert args["optim"] == "adamw_8bit" and args["packing"]
+    assert args["lr_scheduler_type"] == "cosine" and args["warmup_steps"] == 30
+    assert args["gradient_accumulation_steps"] == 2
+    assert args["eval_steps"] == args["save_steps"] == 50
     manager = JobManager()
     record = manager.create("training")
     manager.request_stop(record.job_id)
@@ -250,3 +257,49 @@ def test_sft_stop_saves_native_state(
         result = train_model(replace(sft_setup, max_steps=5))
     assert result.interrupted and result.global_step == 1
     assert resolve_sft_resume(result.last_checkpoint).is_dir()
+
+
+def test_cosine_accumulation_resume_matches_uninterrupted_run(
+    sft_setup: PretrainedTrainingConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from mini_llm.training.sft.trainer import SFTObserver
+
+    config = replace(
+        sft_setup,
+        batch_size=1,
+        gradient_accumulation_steps=2,
+        lr_scheduler_type="cosine",
+        warmup_steps=1,
+        max_steps=3,
+    )
+    stop_event = Event()
+    original = SFTObserver.on_step_end
+
+    def stop(self: SFTObserver, *args: object, **kwargs: object) -> None:
+        stop_event.set()
+        original(self, *args, **kwargs)  # type: ignore[arg-type]
+
+    with monkeypatch.context() as patch:
+        patch.setattr(SFTObserver, "on_step_end", stop)
+        with training_control(stop_event):
+            first = train_model(config)
+    assert first.interrupted and first.global_step == 1
+    second = train_model(
+        replace(
+            config,
+            checkpoint_dir=config.checkpoint_dir.parent / "resumed-cosine",
+            resume_from=first.last_checkpoint,
+        )
+    )
+    baseline = train_model(
+        replace(
+            config,
+            checkpoint_dir=config.checkpoint_dir.parent / "full-cosine",
+        )
+    )
+    actual = torch.load(second.last_checkpoint, weights_only=True)
+    expected = torch.load(baseline.last_checkpoint, weights_only=True)
+    assert actual["samples_seen"] == expected["samples_seen"] == 6
+    assert actual["tokens_seen"] == expected["tokens_seen"]
+    for name, value in cast(dict[str, Tensor], actual["model_state_dict"]).items():
+        torch.testing.assert_close(value, expected["model_state_dict"][name], rtol=0, atol=0)

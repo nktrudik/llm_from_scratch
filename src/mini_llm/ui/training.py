@@ -46,7 +46,7 @@ def _parameters(saved: dict[str, object], *, custom: bool, seq: int) -> Training
     left, right = st.columns(2)
     with left:
         batch = st.number_input(
-            "Batch size", 1, MAX_BATCH_SIZE, int(str(saved.get("batch_size", 4 if custom else 2)))
+            "Batch size", 1, MAX_BATCH_SIZE, int(str(saved.get("batch_size", 4 if custom else 1)))
         )
         lr = st.number_input(
             "Learning rate",
@@ -79,6 +79,25 @@ def _parameters(saved: dict[str, object], *, custom: bool, seq: int) -> Training
                 value=int(str(saved.get("lora_alpha", 16))),
                 disabled=custom,
             )
+            targets: Literal["attention-mlp", "all-linear"] | None = st.selectbox(
+                "LoRA target modules",
+                [None, "attention-mlp", "all-linear"],
+                index=0 if custom or saved else 1,
+                format_func=lambda value: {
+                    None: "Как в конфиге модели",
+                    "attention-mlp": "Attention + MLP",
+                    "all-linear": "all-linear",
+                }[value],
+                disabled=custom,
+            )
+            accumulation = st.number_input(
+                "Gradient accumulation steps",
+                min_value=1,
+                value=int(
+                    str(saved.get("gradient_accumulation_steps", 1 if custom or saved else 2))
+                ),
+                disabled=custom,
+            )
             workers = st.number_input(
                 "DataLoader workers",
                 min_value=0,
@@ -104,7 +123,7 @@ def _parameters(saved: dict[str, object], *, custom: bool, seq: int) -> Training
             val_interval = st.number_input(
                 "Validation interval",
                 min_value=1,
-                value=int(str(saved.get("validation_interval", 100))),
+                value=int(str(saved.get("validation_interval", 1000 if custom else 50))),
             )
             val_batches = st.number_input(
                 "Validation batches (0 = все)",
@@ -114,7 +133,7 @@ def _parameters(saved: dict[str, object], *, custom: bool, seq: int) -> Training
             checkpoint_interval = st.number_input(
                 "Checkpoint interval",
                 min_value=1,
-                value=int(str(saved.get("checkpoint_interval", 100))),
+                value=int(str(saved.get("checkpoint_interval", 1000 if custom else 50))),
             )
             log_interval = st.number_input(
                 "Log interval", min_value=1, value=int(str(saved.get("log_interval", 25)))
@@ -133,6 +152,26 @@ def _parameters(saved: dict[str, object], *, custom: bool, seq: int) -> Training
                 value=bool(saved.get("gradient_checkpointing", False)),
                 disabled=custom,
             )
+            scheduler: Literal["cosine", "constant"] = st.selectbox(
+                "LR scheduler",
+                ["cosine", "constant"],
+                index=1
+                if saved.get("lr_scheduler_type", "constant" if custom or saved else "cosine")
+                == "constant"
+                else 0,
+                disabled=custom,
+            )
+            warmup = st.number_input(
+                "Warmup steps",
+                min_value=0,
+                value=int(str(saved.get("warmup_steps", 0 if custom or saved else 30))),
+                disabled=custom,
+            )
+            packing = st.checkbox(
+                "Packing (если поддерживается)",
+                value=bool(saved.get("packing", not custom and not saved)),
+                disabled=custom,
+            )
             device: Literal["cuda", "cpu"] = st.selectbox("Device", ["cuda", "cpu"])
     return TrainingParameters(
         batch_size=batch,
@@ -143,6 +182,11 @@ def _parameters(saved: dict[str, object], *, custom: bool, seq: int) -> Training
         pretrained_engine=engine,
         lora_rank=rank,
         lora_alpha=alpha,
+        lora_target_modules=targets,
+        gradient_accumulation_steps=accumulation,
+        lr_scheduler_type=scheduler,
+        warmup_steps=warmup,
+        packing=packing,
         num_workers=workers,
         random_seed=seed,
         max_train_samples=limit or None,

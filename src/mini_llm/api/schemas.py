@@ -81,6 +81,10 @@ class TrainingRequest(BaseModel):
     max_train_samples: int | None = Field(default=None, ge=1)
     max_validation_samples: int | None = Field(default=None, ge=1)
     pretrained_engine: Literal["transformers", "unsloth"] = "transformers"
+    gradient_accumulation_steps: int = Field(default=1, ge=1)
+    lr_scheduler_type: Literal["constant", "cosine"] = "constant"
+    warmup_steps: int = Field(default=0, ge=0)
+    packing: bool = False
 
     @model_validator(mode="after")
     def validate_duration(self) -> Self:
@@ -103,6 +107,10 @@ class TrainingRequest(BaseModel):
                 "validation_interval",
                 "validation_batches",
                 "checkpoint_interval",
+                "gradient_accumulation_steps",
+                "lr_scheduler_type",
+                "warmup_steps",
+                "packing",
             ):
                 if name not in self.model_fields_set:
                     setattr(self, name, getattr(defaults, name))
@@ -147,6 +155,10 @@ class PretrainedPrepareRequest(BaseModel):
                 self.torch_dtype = "bfloat16"
             if "gradient_checkpointing" not in self.model_fields_set:
                 self.gradient_checkpointing = False
+            if "lora_target_modules" not in self.model_fields_set:
+                self.lora_target_modules = PretrainedConfig(
+                    model_id=self.model_id, adaptation_mode="qlora"
+                ).lora_target_modules
         return self
 
     def to_config(self) -> PretrainedConfig:

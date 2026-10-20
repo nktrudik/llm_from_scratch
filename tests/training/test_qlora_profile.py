@@ -56,10 +56,10 @@ def tiny_backend() -> CustomCausalLMBackend:
 
 def test_pretrained_profile_and_explicit_overrides() -> None:
     config = PretrainedTrainingConfig(pretrained_config_file=Path("model.json"))
-    assert config.batch_size == config.num_workers == 2
+    assert config.batch_size == 1 and config.num_workers == 2
     assert config.max_train_samples == 30_000
     assert config.max_validation_samples == 1000
-    assert config.validation_interval == config.checkpoint_interval == 500
+    assert config.validation_interval == config.checkpoint_interval == 50
     assert config.validation_batches == 50
     assert config.log_interval == 100
     assert TrainingConfig().max_train_samples is None
@@ -98,17 +98,17 @@ def test_training_cli_uses_backend_defaults_and_full_dataset_flag(
     if limit is not None:
         args += ["--max-train-samples", str(limit), "--max-validation-samples", str(limit)]
     assert cli.main(args) == 0
-    assert calls[0].batch_size == 2
+    assert calls[0].batch_size == 1
     assert calls[0].num_workers == 2
     assert calls[0].max_train_samples == (30_000 if limit is None else limit or None)
     assert calls[0].max_validation_samples == (1000 if limit is None else limit or None)
-    assert calls[0].validation_interval == 500
+    assert calls[0].validation_interval == 50
     assert calls[0].validation_batches == 50
 
 
 def test_api_uses_pretrained_profile_without_changing_custom_defaults() -> None:
     config = TrainingRequest(model_backend="pretrained", pretrained_config_file=Path("model.json"))
-    assert config.to_config().batch_size == 2
+    assert config.to_config().batch_size == 1
     assert config.to_config().max_train_samples == 30_000
     assert config.to_config().max_validation_samples == 1000
     assert TrainingRequest().to_config().batch_size == TrainingConfig().batch_size
@@ -322,4 +322,4 @@ def test_oom_is_reported_without_retries(monkeypatch: pytest.MonkeyPatch) -> Non
     monkeypatch.setattr(sft_pipeline, "train_pretrained", fail)
     with pytest.raises(RuntimeError, match="автоматический fallback отключён"):
         pipeline.train_model(PretrainedTrainingConfig(pretrained_config_file=Path("model.json")))
-    assert calls == [2]
+    assert calls == [1]

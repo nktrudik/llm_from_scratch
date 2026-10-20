@@ -6,7 +6,7 @@ from types import ModuleType, SimpleNamespace
 import pytest
 from torch import nn
 
-from mini_llm.pretrained.config import PretrainedConfig
+from mini_llm.pretrained.config import ATTENTION_MLP_TARGET_MODULES, PretrainedConfig
 from mini_llm.training.sft import unsloth
 
 
@@ -56,7 +56,7 @@ def test_unsloth_preserves_model_revision_quantization_and_adapter(
     assert load_args["load_in_4bit"] is True
     assert load_args["use_gradient_checkpointing"] is False
     assert adapter_args["r"] == 8 and adapter_args["lora_alpha"] == 16
-    assert adapter_args["target_modules"] == "all-linear"
+    assert adapter_args["target_modules"] == ATTENTION_MLP_TARGET_MODULES
     assert adapter_args["random_state"] == 42
 
 

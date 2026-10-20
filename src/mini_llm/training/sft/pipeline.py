@@ -21,6 +21,7 @@ from mini_llm.training.schemas import TrainingResult
 from mini_llm.training.sft.checkpoints import resolve_sft_resume, resume_metadata
 from mini_llm.training.sft.config import sft_arguments
 from mini_llm.training.sft.data import ResponseOnlyCollator, prepare_dataset
+from mini_llm.training.sft.packing import pack_training_dataset, packing_available
 
 
 def train_pretrained(config: TrainingConfig) -> TrainingResult:
@@ -83,16 +84,31 @@ def train_pretrained(config: TrainingConfig) -> TrainingResult:
     # Импорт после Unsloth: он должен установить свои патчи до transformers/TRL.
     from mini_llm.training.sft.trainer import ObservedSFTTrainer, SFTObserver
 
+    packing = packing_available(
+        prepared.model.module, requested=config.packing, device=config.device
+    )
+    if saved and saved.get("effective_packing", False) != packing:
+        raise ValueError("Resume требует тот же фактический режим packing")
+    original_train_samples = len(train)
+    if packing:
+        train = pack_training_dataset(train, max_length=base.max_sequence_length)
     plan = calculate_training_plan(
-        len(train), config.batch_size, epochs=config.epochs, max_steps=config.max_steps
+        len(train),
+        config.batch_size,
+        epochs=config.epochs,
+        max_steps=config.max_steps,
+        gradient_accumulation_steps=config.gradient_accumulation_steps,
     )
     if saved and int(str(saved.get("global_step", 0))) >= plan.planned_total_steps:
         raise ValueError("Checkpoint уже достиг общего плана; увеличьте epochs или max_steps")
     terminal_log(
         "SFT PLAN",
-        f"train={config.splits_dir / 'train.jsonl'} samples={len(train)} "
+        f"train={config.splits_dir / 'train.jsonl'} samples={original_train_samples} "
+        f"training_windows={len(train)} optimizer_steps=True "
         f"steps_per_epoch={plan.steps_per_epoch} planned_total_steps={plan.planned_total_steps}",
     )
+    if config.warmup_steps >= plan.planned_total_steps:
+        terminal_log("SFT PLAN", "Warmup занимает весь план; cosine-фаза не успеет начаться")
     progress = current_training_progress()
     if progress:
         progress.snapshot.steps_per_epoch = plan.steps_per_epoch
@@ -104,6 +120,10 @@ def train_pretrained(config: TrainingConfig) -> TrainingResult:
         "SFT PARAMS",
         f"engine={config.pretrained_engine} dtype={base.torch_dtype} "
         f"seq_length={base.max_sequence_length} batch_size={config.batch_size} "
+        f"gradient_accumulation_steps={config.gradient_accumulation_steps} "
+        f"effective_batch_windows={config.batch_size * config.gradient_accumulation_steps} "
+        f"scheduler={config.lr_scheduler_type} warmup_steps={config.warmup_steps} "
+        f"packing={packing} target_modules={base.lora_target_modules} "
         f"gradient_checkpointing={base.gradient_checkpointing} r={base.lora_rank} "
         f"alpha={base.lora_alpha} workers={config.num_workers} thinking=False "
         f"optimizer={'AdamW8bit' if base.adaptation_mode == 'qlora' else 'AdamW'} "
@@ -111,8 +131,9 @@ def train_pretrained(config: TrainingConfig) -> TrainingResult:
         f"versions={versions}",
     )
     factory = cast(Callable[..., object], require_module("trl").SFTConfig)
-    arguments = factory(**sft_arguments(config, base))
+    arguments = factory(**sft_arguments(config, base, packing=packing))
     observer = SFTObserver(config, prepared)
+    observer.packing_enabled = packing
     with terminal_stage("SFT TRAINER", "создание SFTTrainer"):
         trainer_factory = cast(Callable[..., ObservedSFTTrainer], ObservedSFTTrainer)
         trainer = trainer_factory(
@@ -121,7 +142,9 @@ def train_pretrained(config: TrainingConfig) -> TrainingResult:
             train_dataset=train,
             eval_dataset=validation,
             processing_class=prepared.tokenizer.backend,
-            data_collator=ResponseOnlyCollator(prepared.tokenizer.pad_token_id),
+            data_collator=None
+            if packing
+            else ResponseOnlyCollator(prepared.tokenizer.pad_token_id),
             callbacks=[observer],
         )
         trainer.observer = observer

@@ -6,7 +6,7 @@ from types import ModuleType, SimpleNamespace
 import pytest
 
 from mini_llm.pretrained import PretrainedConfig, cli, download, setup
-from mini_llm.pretrained.config import AdaptationMode
+from mini_llm.pretrained.config import ATTENTION_MLP_TARGET_MODULES, AdaptationMode
 from mini_llm.pretrained.download import DownloadedSnapshot, select_model_files
 from mini_llm.pretrained.workspace import (
     ACTIVE_MODEL_FILE,
@@ -62,7 +62,9 @@ def test_setup_pins_revision_and_registers_artifacts(
     assert config.lora_rank == 8
     assert config.lora_alpha == 16
     assert config.lora_dropout == 0.05
-    assert config.lora_target_modules == "all-linear"
+    assert config.lora_target_modules == (
+        ATTENTION_MLP_TARGET_MODULES if mode == "qlora" else "all-linear"
+    )
     assert config.qlora_quant_type == "nf4"
     assert config.qlora_double_quant
     assert registration.config_file == paths.config_file

@@ -10,6 +10,13 @@ from mini_llm.data.config import MAX_BATCH_SIZE
 from mini_llm.tokenization.config import DEFAULT_TOKENIZER_PATH
 from mini_llm.training.progress import calculate_training_plan
 
+LEGACY_SFT_SETTINGS: dict[str, int | str | bool] = {
+    "gradient_accumulation_steps": 1,
+    "lr_scheduler_type": "constant",
+    "warmup_steps": 0,
+    "packing": False,
+}
+
 
 @dataclass(frozen=True, slots=True)
 class TrainingConfig:
@@ -39,6 +46,10 @@ class TrainingConfig:
     max_train_samples: int | None = None
     max_validation_samples: int | None = None
     pretrained_engine: Literal["transformers", "unsloth"] = "transformers"
+    gradient_accumulation_steps: int = 1
+    lr_scheduler_type: Literal["constant", "cosine"] = "constant"
+    warmup_steps: int = 0
+    packing: bool = False
 
     def __post_init__(self) -> None:
         if self.model_backend == "pretrained" and self.pretrained_config_file is None:
@@ -51,6 +62,7 @@ class TrainingConfig:
             "validation_interval": self.validation_interval,
             "checkpoint_interval": self.checkpoint_interval,
             "log_interval": self.log_interval,
+            "gradient_accumulation_steps": self.gradient_accumulation_steps,
         }
         for name, value in positive_values.items():
             if value <= 0:
@@ -69,6 +81,17 @@ class TrainingConfig:
             raise ValueError("weight_decay не может быть отрицательным")
         if self.gradient_clip_norm <= 0.0:
             raise ValueError("gradient_clip_norm должен быть положительным")
+        if self.warmup_steps < 0:
+            raise ValueError("warmup_steps не может быть отрицательным")
+        if self.lr_scheduler_type not in {"constant", "cosine"}:
+            raise ValueError("lr_scheduler_type должен быть constant или cosine")
+        if self.model_backend == "custom" and (
+            self.gradient_accumulation_steps != 1
+            or self.lr_scheduler_type != "constant"
+            or self.warmup_steps != 0
+            or self.packing
+        ):
+            raise ValueError("Accumulation, scheduler, warmup и packing доступны только для SFT")
         if self.max_train_samples is not None and self.max_train_samples <= 0:
             raise ValueError("max_train_samples должен быть положительным или None (весь train)")
         if self.max_validation_samples is not None and self.max_validation_samples <= 0:
@@ -82,11 +105,15 @@ class PretrainedTrainingConfig(TrainingConfig):
     """Стартовый профиль pretrained-обучения для GPU с 4 GB VRAM."""
 
     model_backend: Literal["custom", "pretrained"] = "pretrained"
-    batch_size: int = 2
+    batch_size: int = 1
+    gradient_accumulation_steps: int = 2
+    lr_scheduler_type: Literal["constant", "cosine"] = "cosine"
+    warmup_steps: int = 30
+    packing: bool = True
     num_workers: int = 2
     max_train_samples: int | None = 30_000
     max_validation_samples: int | None = 1000
     log_interval: int = 100
-    validation_interval: int = 500
+    validation_interval: int = 50
     validation_batches: int = 50
-    checkpoint_interval: int = 500
+    checkpoint_interval: int = 50

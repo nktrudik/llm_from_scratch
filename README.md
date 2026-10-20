@@ -61,16 +61,19 @@ Qwen использует один native template с `enable_thinking=False` д
 Loss — только последний assistant-ответ и EOS; prompt, пустой thinking-prefix и padding замаскированы.
 Assistant с явным thinking-блоком отклоняется. Слишком длинная пара пропускается целиком,
 старые пары context можно убрать, последний вопрос и полный ответ обязательны.
-Профиль: BF16, NF4 + double quant, r=8, alpha=16, dropout=0.05, all-linear;
-batch=2, seq=512, LR=3e-5, AdamW8bit, workers=2, gradient checkpointing=false.
-Нет скрытого BF16/OOM fallback, packing или изменения исходного корпуса.
-Версии библиотек закреплены в pyproject.toml и uv.lock; постоянный LR, без warmup.
+QLoRA: BF16, NF4 + double quant, r=8, alpha=16, dropout=0.05; Attention + MLP:
+`q_proj/k_proj/v_proj/o_proj/gate_proj/up_proj/down_proj`, без lm_head/embeddings.
+Micro-batch=1, accumulation=2 (эффективно 2 окна), seq=512, LR=3e-5, cosine + warmup=30;
+AdamW8bit, workers=2, checkpointing=false; validation/checkpoints каждые 50 optimizer steps.
+Packing: auto BFD целых диалогов, только с совместимым FlashAttention; на SDPA явно выключается.
+Response-only labels сохраняются; validation не упаковывается. Версии закреплены; BF16/OOM fallback нет.
 
 Каждый запуск/resume получает новую папку. Native checkpoint хранит optimizer, scheduler,
 TrainerState и RNG; .pt экспортируется для прежнего inference. Для resume не удаляйте checkpoint-N/.
 Старые .pt остаются доступны в чате, но их optimizer нельзя продолжить в новом TRL trainer.
 Новый SFT начните с базовой модели. Resume нового формата требует исходные модель, данные,
-rank/alpha, LR, batch и seed; увеличьте общий epochs/max_steps, если план уже достигнут.
+target modules, rank/alpha, LR, batch, accumulation, scheduler, warmup, packing и seed.
+Для новых настроек нужен новый запуск; старые checkpoints и их конфиги не изменяются.
 Unsloth необязателен: `uv sync --locked --extra dev --extra ui --extra unsloth`,
 затем свежий API и движок unsloth в настройках **до** генерации/загрузки через этот процесс.
 Его GPU-ядра не проверяются CPU unit tests; несовместимость не маскируется fallback.

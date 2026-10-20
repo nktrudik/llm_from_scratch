@@ -80,6 +80,15 @@ def test_training_requires_explicit_form_submission(
     assert len(calls) == 1
     assert calls[0]["dataset_version"] == "v3"
     assert calls[0]["model_id"] == "Qwen/Qwen3-0.6B"
+    parameters = calls[0]["parameters"]
+    assert isinstance(parameters, dict)
+    assert parameters["batch_size"] == 1
+    assert parameters["gradient_accumulation_steps"] == 2
+    assert parameters["lr_scheduler_type"] == "cosine"
+    assert parameters["warmup_steps"] == 30
+    assert parameters["packing"] is True
+    assert parameters["lora_target_modules"] == "attention-mlp"
+    assert parameters["validation_interval"] == parameters["checkpoint_interval"] == 50
     assert "checkpoint_dir" not in calls[0]
     training_app.run()
     assert len(calls) == 1

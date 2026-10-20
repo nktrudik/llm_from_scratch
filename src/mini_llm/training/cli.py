@@ -38,6 +38,10 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument("--resume-from", type=Path)
     parser.add_argument("--batch-size", type=int, choices=range(1, MAX_BATCH_SIZE + 1))
     parser.add_argument("--num-workers", type=int)
+    parser.add_argument("--gradient-accumulation-steps", type=int)
+    parser.add_argument("--lr-scheduler-type", choices=("constant", "cosine"))
+    parser.add_argument("--warmup-steps", type=int)
+    parser.add_argument("--packing", action=argparse.BooleanOptionalAction, default=None)
     parser.add_argument(
         "--max-train-samples",
         type=int,
@@ -91,6 +95,16 @@ def main(argv: Sequence[str] | None = None) -> int:
                 model_backend=args.backend,
                 pretrained_config_file=args.pretrained_config,
                 pretrained_engine=args.pretrained_engine,
+                gradient_accumulation_steps=(
+                    args.gradient_accumulation_steps
+                    if args.gradient_accumulation_steps is not None
+                    else defaults.gradient_accumulation_steps
+                ),
+                lr_scheduler_type=args.lr_scheduler_type or defaults.lr_scheduler_type,
+                warmup_steps=args.warmup_steps
+                if args.warmup_steps is not None
+                else defaults.warmup_steps,
+                packing=args.packing if args.packing is not None else defaults.packing,
                 batch_size=args.batch_size if args.batch_size is not None else defaults.batch_size,
                 num_workers=args.num_workers
                 if args.num_workers is not None

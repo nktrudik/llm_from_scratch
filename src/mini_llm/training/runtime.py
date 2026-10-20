@@ -49,6 +49,10 @@ def training_config_payload(config: TrainingConfig) -> dict[str, object]:
         "mixed_precision": config.mixed_precision,
         "model_backend": config.model_backend,
         "pretrained_engine": config.pretrained_engine,
+        "gradient_accumulation_steps": config.gradient_accumulation_steps,
+        "lr_scheduler_type": config.lr_scheduler_type,
+        "warmup_steps": config.warmup_steps,
+        "packing": config.packing,
         "splits_dir": config.splits_dir.as_posix(),
         "pretrained_config_file": (
             None if config.pretrained_config_file is None else str(config.pretrained_config_file)

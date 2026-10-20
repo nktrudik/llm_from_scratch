@@ -6,7 +6,7 @@ from typing import cast
 import torch
 
 from mini_llm.pretrained.model import PreparedPretrained
-from mini_llm.training.config import TrainingConfig
+from mini_llm.training.config import LEGACY_SFT_SETTINGS, TrainingConfig
 from mini_llm.training.runtime import training_config_payload
 from mini_llm.workspace.catalog import update_progress
 
@@ -50,8 +50,9 @@ def resume_metadata(config: TrainingConfig, base: object) -> dict[str, object]:
         "max_train_samples",
         "pretrained_engine",
         "splits_dir",
+        *LEGACY_SFT_SETTINGS,
     ):
-        if saved.get(name) != expected.get(name):
+        if saved.get(name, LEGACY_SFT_SETTINGS.get(name)) != expected.get(name):
             raise ValueError(f"Native TRL resume требует исходный {name}")
     metadata = payload.get("model_metadata")
     if not isinstance(metadata, dict) or metadata.get("pretrained_config") != base:
@@ -69,6 +70,7 @@ def export_checkpoint(
     best: bool,
     samples_seen: int,
     tokens_seen: int,
+    packing_enabled: bool = False,
 ) -> Path:
     """Оставить native optimizer/RNG и экспортировать существующий .pt inference-контракт."""
 
@@ -81,6 +83,7 @@ def export_checkpoint(
         "samples_seen": samples_seen,
         "tokens_seen": tokens_seen,
         "training_config": training_config_payload(config),
+        "effective_packing": packing_enabled,
         "sft_checkpoint": f"checkpoint-{step}",
     }
     names = [f"step_{step:08d}.pt", "last.pt"]

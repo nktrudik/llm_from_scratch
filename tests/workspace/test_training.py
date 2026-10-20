@@ -152,6 +152,9 @@ def test_pretrained_config_is_copied_per_run_without_changing_qlora(
     training.run_managed_training(selected, "fake")
     run = list_runs()[0]
     assert calls[0].pretrained_config_file == run.directory / "pretrained.json"
+    assert calls[0].gradient_accumulation_steps == 2
+    assert calls[0].lr_scheduler_type == "cosine" and calls[0].warmup_steps == 30
+    assert calls[0].packing
     assert PretrainedConfig.load(calls[0].pretrained_config_file) == base
     assert PretrainedConfig.load(paths.config_file) == base
     assert run.tokenizer_file is None

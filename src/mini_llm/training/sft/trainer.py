@@ -36,6 +36,8 @@ class ObservedSFTTrainer(SFTTrainer):
     ) -> Tensor | tuple[Tensor, object]:
         loss_tokens = int((inputs["labels"][:, 1:] != -100).sum().item())
         samples = int(inputs["input_ids"].size(0))
+        if "position_ids" in inputs:
+            samples = int((inputs["position_ids"] == 0).sum().item())
         if model.training and not self.observer.first_batch_logged:
             terminal_log(
                 "SFT TRAIN",
@@ -66,6 +68,8 @@ class ObservedSFTTrainer(SFTTrainer):
 
 class SFTObserver(TrainerCallback):
     """Публиковать progress, экспортировать .pt и передавать запрос остановки trainer-у."""
+
+    packing_enabled: bool = False
 
     def __init__(self, config: TrainingConfig, prepared: PreparedPretrained) -> None:
         self.config = config
@@ -205,6 +209,7 @@ class SFTObserver(TrainerCallback):
                 best=self.new_best,
                 samples_seen=self.samples_seen,
                 tokens_seen=self.tokens_seen,
+                packing_enabled=self.packing_enabled,
             )
         self.new_best = False
         terminal_log(
