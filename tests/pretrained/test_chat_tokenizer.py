@@ -14,6 +14,7 @@ from mini_llm.data.interfaces import OversizedResponseError
 from mini_llm.pretrained.config import PretrainedConfig
 from mini_llm.pretrained.inference import QWEN_SYSTEM_PROMPT, generate_pretrained
 from mini_llm.pretrained.model import HuggingFaceCausalLMBackend, PreparedPretrained
+from mini_llm.pretrained.streaming import TokenTextStreamer
 from mini_llm.pretrained.tokenizer import HuggingFaceDialogueTokenizer
 
 
@@ -203,6 +204,12 @@ class PromptRecordingModel(nn.Module):
         input_ids = kwargs["input_ids"]
         assert isinstance(input_ids, Tensor)
         self.input_ids = input_ids.clone()
+        streamer = kwargs.get("streamer")
+        if isinstance(streamer, TokenTextStreamer):
+            streamer.put(input_ids)
+            streamer.put(torch.tensor([ord("a") + 100]))
+            streamer.put(torch.tensor([2]))
+            streamer.end()
         return torch.cat((input_ids, torch.tensor([[ord("a") + 100, 2]])), dim=1)
 
 
@@ -254,6 +261,24 @@ def test_system_prompt_without_native_template_is_not_silently_ignored() -> None
     tokenizer = HuggingFaceDialogueTokenizer(backend)
     with pytest.raises(RuntimeError, match="native chat template"):
         tokenizer.encode_prompt("Привет", system_prompt=QWEN_SYSTEM_PROMPT)
+
+
+def test_pretrained_stream_preserves_output_and_generation_parameters() -> None:
+    model = PromptRecordingModel()
+    prepared = PreparedPretrained(
+        HuggingFaceCausalLMBackend(model, PretrainedConfig(model_id="Qwen/Qwen3-0.6B")),
+        HuggingFaceDialogueTokenizer(ThinkingTokenizer()),
+    )
+    snapshots: list[str] = []
+    expected = generate_pretrained(prepared, "Привет", temperature=0.3, top_k=20)
+    actual = generate_pretrained(
+        prepared, "Привет", temperature=0.3, top_k=20, on_text=snapshots.append
+    )
+    assert actual == expected
+    assert snapshots == ["", "a", "a", "a"]
+    assert model.generation_kwargs["repetition_penalty"] == 1.1
+    assert model.generation_kwargs["top_k"] == 20
+    assert model.generation_kwargs["temperature"] == 0.3
 
 
 class MessageEndTokenizer(ChatTokenizer):

@@ -66,22 +66,24 @@ def render_chat() -> None:
         return
     with st.chat_message("user"):
         st.text(prompt)
-    try:
-        with st.spinner("Генерация…"):
-            reply = client.generate_reply(
-                prompt,
-                backend,
-                mode,
-                checkpoint_name=checkpoint_name,
-                pretrained_model_id=model_id if backend == "pretrained" else None,
-                experiment_id=experiment_id,
-            )
-    except client.GenerationAPIError as error:
-        st.error(str(error))
-        return
     with st.chat_message("assistant"):
-        # Plain text не превращает цитаты, HTML и ChatML-разметку модели в оформление UI.
-        st.text(reply or "Пустой ответ")
+        output = st.empty()
+        reply = ""
+        try:
+            with st.spinner("Генерация…"):
+                for reply in client.stream_reply(
+                    prompt,
+                    backend,
+                    mode,
+                    checkpoint_name=checkpoint_name,
+                    pretrained_model_id=model_id if backend == "pretrained" else None,
+                    experiment_id=experiment_id,
+                ):
+                    # Снимки позволяют корректно дополнять BPE и показывать текст без Markdown.
+                    output.text(reply)
+            output.text(reply or "Пустой ответ")
+        except client.GenerationAPIError as error:
+            st.error(str(error))
 
 
 def main() -> None:

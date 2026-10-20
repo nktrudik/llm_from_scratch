@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -69,11 +70,11 @@ def test_only_one_exchange_and_no_automatic_generation(
 ) -> None:
     calls: list[dict[str, object]] = []
 
-    def generate(prompt: str, backend: str, mode: object = None, **kwargs: object) -> str:
+    def generate(prompt: str, backend: str, mode: object = None, **kwargs: object) -> Iterator[str]:
         calls.append({"prompt": prompt, "backend": backend, "mode": mode, **kwargs})
-        return "Ответ: " + prompt
+        return iter(["Ответ: " + prompt])
 
-    monkeypatch.setattr(client, "generate_reply", generate)
+    monkeypatch.setattr(client, "stream_reply", generate)
     assert not chat.exception and not calls
     assert len(chat.selectbox) == 3
     chat.chat_input[0].set_value("Привет").run()
@@ -93,11 +94,11 @@ def test_qwen_selects_run_and_checkpoint_without_paths(
 ) -> None:
     calls: list[dict[str, object]] = []
 
-    def generate(prompt: str, backend: str, mode: object = None, **kwargs: object) -> str:
+    def generate(prompt: str, backend: str, mode: object = None, **kwargs: object) -> Iterator[str]:
         calls.append({"backend": backend, "mode": mode, **kwargs})
-        return "Ответ"
+        return iter(["Ответ"])
 
-    monkeypatch.setattr(client, "generate_reply", generate)
+    monkeypatch.setattr(client, "stream_reply", generate)
     chat.selectbox[0].select("Qwen/Qwen3-0.6B").run()
     assert not chat.exception and not chat.radio
     assert chat.selectbox[1].value == "qwen-v2"
@@ -117,12 +118,12 @@ def test_qwen_selects_run_and_checkpoint_without_paths(
 def test_base_model_and_models_without_runs(chat: AppTest, monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[object] = []
 
-    def generate(prompt: str, backend: str, mode: object = None, **kwargs: object) -> str:
+    def generate(prompt: str, backend: str, mode: object = None, **kwargs: object) -> Iterator[str]:
         calls.append(mode)
         assert kwargs["checkpoint_name"] is None and kwargs["experiment_id"] is None
-        return "Привет!"
+        return iter(["Привет!"])
 
-    monkeypatch.setattr(client, "generate_reply", generate)
+    monkeypatch.setattr(client, "stream_reply", generate)
     chat.selectbox[0].select("Qwen/Qwen3-0.6B").run()
     chat.selectbox[1].select("").run()
     assert len(chat.selectbox) == 2
@@ -135,7 +136,7 @@ def test_base_model_and_models_without_runs(chat: AppTest, monkeypatch: pytest.M
 
 @pytest.mark.parametrize("reply", [">>123\nОтвет **без Markdown**", "<b>Текст</b> 😄", ""])
 def test_literal_model_output(chat: AppTest, monkeypatch: pytest.MonkeyPatch, reply: str) -> None:
-    monkeypatch.setattr(client, "generate_reply", lambda *args, **kwargs: reply)
+    monkeypatch.setattr(client, "stream_reply", lambda *args, **kwargs: iter([reply]))
     chat.chat_input[0].set_value("Тест").run()
     assert not chat.exception
     assert chat.text[-1].value == (reply or "Пустой ответ")
@@ -151,6 +152,23 @@ def test_api_failure_is_shown_without_crash(chat: AppTest, monkeypatch: pytest.M
     assert not chat.exception
     assert chat.error[0].value == "API недоступен"
     assert not chat.chat_input
+
+
+def test_stream_updates_one_plain_text_block_and_preserves_partial_answer(
+    chat: AppTest, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def stream(*args: object, **kwargs: object) -> Iterator[str]:
+        yield ">>123"
+        yield ">>123\nОтвет **как текст**"
+        raise client.GenerationAPIError("Соединение прервано")
+
+    monkeypatch.setattr(client, "stream_reply", stream)
+    chat.chat_input[0].set_value("Тест").run()
+    assert not chat.exception
+    assert len(chat.chat_message) == 2
+    assert chat.text[-1].value == ">>123\nОтвет **как текст**"
+    assert chat.error[0].value == "Соединение прервано"
+    assert not chat.markdown and not chat.checkbox
 
 
 def test_no_weights_disables_chat(chat: AppTest, monkeypatch: pytest.MonkeyPatch) -> None:

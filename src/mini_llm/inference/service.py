@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import asdict
 from pathlib import Path
 from typing import cast
@@ -21,6 +21,7 @@ from mini_llm.pretrained import (
     generate_pretrained,
     prepare_pretrained_model,
 )
+from mini_llm.pretrained.streaming import TokenTextStreamer
 from mini_llm.tokenization import BPETokenizer
 
 _pretrained_cache = PretrainedModelCache()
@@ -75,6 +76,7 @@ def _generate_custom(
     prompt: str,
     config: GenerationConfig,
     device: torch.device,
+    on_text: Callable[[str], None] | None = None,
 ) -> GenerationResult:
     tokenizer_file = config.tokenizer_file
     if tokenizer_file is None:
@@ -83,7 +85,7 @@ def _generate_custom(
         raise RuntimeError("Для custom backend не указан checkpoint_file")
     tokenizer = BPETokenizer.load(tokenizer_file)
     model = _load_custom_model(config.checkpoint_file, device)
-    return _generate_custom_response(prompt, config, device, model, tokenizer)
+    return _generate_custom_response(prompt, config, device, model, tokenizer, on_text)
 
 
 def _generate_custom_response(
@@ -92,6 +94,7 @@ def _generate_custom_response(
     device: torch.device,
     model: DecoderOnlyTransformer,
     tokenizer: BPETokenizer,
+    on_text: Callable[[str], None] | None = None,
 ) -> GenerationResult:
     """Генерировать с уже загруженными весами и tokenizer без повторного чтения диска."""
 
@@ -102,14 +105,20 @@ def _generate_custom_response(
         tokenizer.token_to_id(ASSISTANT_TOKEN),
     ]
     input_ids = torch.tensor([prompt_ids], dtype=torch.long, device=device)
+    eos_id = tokenizer.token_to_id(EOS_TOKEN)
+    streamer = TokenTextStreamer(tokenizer, on_text, [eos_id]) if on_text is not None else None
+    if streamer is not None:
+        streamer.put(input_ids)
     generated = model.generate(
         input_ids,
         max_new_tokens=config.max_new_tokens,
         temperature=config.temperature,
         top_k=config.top_k,
+        on_token=streamer.put if streamer is not None else None,
     )
+    if streamer is not None:
+        streamer.end()
     new_token_ids = cast(list[int], generated[0, len(prompt_ids) :].tolist())
-    eos_id = tokenizer.token_to_id(EOS_TOKEN)
     if eos_id in new_token_ids:
         new_token_ids = new_token_ids[: new_token_ids.index(eos_id)]
     return GenerationResult(
@@ -145,6 +154,7 @@ def _generate_with_pretrained(
     prompt: str,
     config: GenerationConfig,
     device: torch.device,
+    on_text: Callable[[str], None] | None = None,
 ) -> GenerationResult:
     config_file = config.pretrained_config_file
     if config_file is None:
@@ -157,17 +167,32 @@ def _generate_with_pretrained(
         device,
         lambda: _load_pretrained_model(config_file, config.checkpoint_file, device),
     ) as prepared:
-        result = generate_pretrained(
-            prepared,
-            prompt,
-            max_new_tokens=config.max_new_tokens,
-            temperature=config.temperature,
-            top_k=config.top_k,
-        )
+        if on_text is None:
+            result = generate_pretrained(
+                prepared,
+                prompt,
+                max_new_tokens=config.max_new_tokens,
+                temperature=config.temperature,
+                top_k=config.top_k,
+            )
+        else:
+            result = generate_pretrained(
+                prepared,
+                prompt,
+                max_new_tokens=config.max_new_tokens,
+                temperature=config.temperature,
+                top_k=config.top_k,
+                on_text=on_text,
+            )
     return GenerationResult(result.text, result.token_ids)
 
 
-def generate_response(prompt: str, config: GenerationConfig | None = None) -> GenerationResult:
+def generate_response(
+    prompt: str,
+    config: GenerationConfig | None = None,
+    *,
+    on_text: Callable[[str], None] | None = None,
+) -> GenerationResult:
     """Сгенерировать ответ через выбранный custom или pretrained backend."""
 
     active_config = config or GenerationConfig()
@@ -179,6 +204,10 @@ def generate_response(prompt: str, config: GenerationConfig | None = None) -> Ge
     if device.type not in {"cpu", "cuda"}:
         raise ValueError("Поддерживаются только устройства cpu и cuda")
     if active_config.model_backend == "pretrained":
-        return _generate_with_pretrained(prompt, active_config, device)
+        if on_text is None:
+            return _generate_with_pretrained(prompt, active_config, device)
+        return _generate_with_pretrained(prompt, active_config, device, on_text)
     clear_pretrained_cache()
-    return _generate_custom(prompt, active_config, device)
+    if on_text is None:
+        return _generate_custom(prompt, active_config, device)
+    return _generate_custom(prompt, active_config, device, on_text)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Protocol, cast
 
@@ -9,6 +10,7 @@ import torch
 from torch import Tensor
 
 from mini_llm.pretrained.model import PreparedPretrained
+from mini_llm.pretrained.streaming import TokenTextStreamer
 from mini_llm.pretrained.tokenizer import HuggingFaceDialogueTokenizer
 
 QWEN_REPETITION_PENALTY = 1.1
@@ -54,6 +56,7 @@ def generate_pretrained(
     max_new_tokens: int = 1024,
     temperature: float = 0.8,
     top_k: int | None = 50,
+    on_text: Callable[[str], None] | None = None,
 ) -> PretrainedGenerationResult:
     """Сгенерировать ответ без привязки к внутреннему классу Transformers."""
 
@@ -70,6 +73,8 @@ def generate_pretrained(
     generation_kwargs: dict[str, object] = {}
     if is_qwen:
         generation_kwargs["repetition_penalty"] = QWEN_REPETITION_PENALTY
+    if on_text is not None:
+        generation_kwargs["streamer"] = TokenTextStreamer(prepared.tokenizer, on_text, stop_ids)
     prompt_ids = prepared.tokenizer.encode_prompt(prompt, system_prompt=system_prompt)
     try:
         device = next(prepared.model.module.parameters()).device

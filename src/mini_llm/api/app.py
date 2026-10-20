@@ -6,6 +6,7 @@ from collections.abc import Callable
 from dataclasses import asdict
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException, status
+from fastapi.responses import StreamingResponse
 
 from mini_llm.api.evaluations import create_evaluation_router
 from mini_llm.api.jobs import JobAlreadyRunningError, JobManager
@@ -35,6 +36,7 @@ from mini_llm.api.services import (
     run_tokenizer_training,
     run_training,
 )
+from mini_llm.api.streaming import generation_stream
 from mini_llm.inference import clear_pretrained_cache, generate_response
 from mini_llm.inference.experiments import list_experiments
 from mini_llm.inference.options import pretrained_generation_options
@@ -324,3 +326,10 @@ def generate(request: GenerationRequest) -> GenerationResponse:
     except (OSError, RuntimeError, ValueError) as error:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)) from error
     return GenerationResponse(text=result.text, token_ids=result.token_ids)
+
+
+@app.post("/v1/generate/stream", response_class=StreamingResponse)
+def generate_stream(request: GenerationRequest) -> StreamingResponse:
+    """Потоковый чат для обоих backend с теми же параметрами генерации."""
+
+    return generation_stream(request, job_manager)

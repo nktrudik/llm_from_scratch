@@ -1,5 +1,7 @@
 """HTTP-клиент существующей ручки генерации без локальной загрузки модели."""
 
+import json
+from collections.abc import Iterator
 from pathlib import Path
 from typing import cast
 
@@ -82,14 +84,14 @@ def get_generation_options() -> GenerationOptions:
         raise GenerationAPIError("API вернул некорректный список режимов Qwen.") from error
 
 
-def generate_reply(
+def _generation_body(
     prompt: str,
     model_backend: ModelBackend,
     pretrained_mode: PretrainedMode | None = None,
     checkpoint_name: str | None = None,
     pretrained_model_id: str | None = None,
     experiment_id: str | None = None,
-) -> str:
+) -> dict[str, str]:
     """Передать prompt, backend и режим Qwen; пути и параметры выбирает API."""
 
     body = {"prompt": prompt, "model_backend": model_backend}
@@ -118,6 +120,22 @@ def generate_reply(
         body["checkpoint_name"] = name
     elif checkpoint_name is not None:
         raise GenerationAPIError("Имя checkpoint допустимо только в режиме «Свой чекпоинт»")
+    return body
+
+
+def generate_reply(
+    prompt: str,
+    model_backend: ModelBackend,
+    pretrained_mode: PretrainedMode | None = None,
+    checkpoint_name: str | None = None,
+    pretrained_model_id: str | None = None,
+    experiment_id: str | None = None,
+) -> str:
+    """Получить готовый ответ через прежнюю непотоковую ручку API."""
+
+    body = _generation_body(
+        prompt, model_backend, pretrained_mode, checkpoint_name, pretrained_model_id, experiment_id
+    )
     try:
         with api_session(API_BASE_URL) as session:
             response = session.post(
@@ -138,3 +156,51 @@ def generate_reply(
     if not isinstance(payload, dict) or not isinstance(payload.get("text"), str):
         raise GenerationAPIError("В ответе API отсутствует текст модели.")
     return cast(str, payload["text"])
+
+
+def stream_reply(
+    prompt: str,
+    model_backend: ModelBackend,
+    pretrained_mode: PretrainedMode | None = None,
+    checkpoint_name: str | None = None,
+    pretrained_model_id: str | None = None,
+    experiment_id: str | None = None,
+) -> Iterator[str]:
+    """Читать обновления текста сразу, без ожидания полного HTTP-ответа."""
+
+    body = _generation_body(
+        prompt, model_backend, pretrained_mode, checkpoint_name, pretrained_model_id, experiment_id
+    )
+    try:
+        with (
+            api_session(API_BASE_URL) as session,
+            session.post(
+                f"{API_BASE_URL}/v1/generate/stream",
+                json=body,
+                timeout=REQUEST_TIMEOUT,
+                stream=True,
+            ) as response,
+        ):
+            if not response.ok:
+                response_payload(response)
+            response.encoding = "utf-8"
+            for line in response.iter_lines(chunk_size=1, decode_unicode=True):
+                if not line:
+                    continue
+                payload = json.loads(line)
+                if not isinstance(payload, dict):
+                    raise GenerationAPIError("Некорректное событие потока API")
+                if payload.get("type") == "error":
+                    raise GenerationAPIError(str(payload.get("detail", "Ошибка генерации")))
+                if payload.get("type") in {"text", "done"}:
+                    text = payload.get("text")
+                    if not isinstance(text, str):
+                        raise GenerationAPIError("В потоке API отсутствует текст модели")
+                    yield text
+                    if payload["type"] == "done":
+                        return
+            raise GenerationAPIError("Поток API оборвался до завершения ответа")
+    except requests.RequestException as error:
+        raise GenerationAPIError(f"Соединение с API прервано: {error}") from error
+    except ValueError as error:
+        raise GenerationAPIError("API вернул некорректный JSON в потоке") from error

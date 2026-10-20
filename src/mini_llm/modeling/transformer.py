@@ -1,5 +1,6 @@
 """PyTorch-модули компактного decoder-only Transformer."""
 
+from collections.abc import Callable
 from typing import cast, overload
 
 import torch
@@ -97,6 +98,7 @@ class DecoderOnlyTransformer(nn.Module):
         max_new_tokens: int,
         temperature: float = 1.0,
         top_k: int | None = None,
+        on_token: Callable[[Tensor], None] | None = None,
     ) -> Tensor:
         """Авторегрессионно добавить сэмплированные token IDs к prompt."""
 
@@ -124,5 +126,7 @@ class DecoderOnlyTransformer(nn.Module):
             probabilities = F.softmax(next_token_logits, dim=-1)
             next_token = torch.multinomial(probabilities, num_samples=1)
             generated = torch.cat((generated, next_token), dim=1)
+            if on_token is not None:
+                on_token(next_token)
 
         return generated
