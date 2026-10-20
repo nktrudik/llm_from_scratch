@@ -103,14 +103,20 @@ class HuggingFaceDialogueTokenizer:
 
         return self._eos_id()
 
-    def encode_prompt(self, prompt: str) -> list[int]:
-        """Использовать тот же non-thinking prompt, что и при обучении."""
+    def encode_prompt(self, prompt: str, *, system_prompt: str | None = None) -> list[int]:
+        """Собрать non-thinking prompt с отдельной системной ролью, если она задана."""
 
         if self.has_chat_template:
+            messages = []
+            if system_prompt is not None:
+                messages.append({"role": "system", "content": system_prompt})
+            messages.append({"role": "user", "content": prompt})
             return self._chat_ids(
-                [{"role": "user", "content": prompt}],
+                messages,
                 generation_prompt=True,
             )
+        if system_prompt is not None:
+            raise RuntimeError("Системный prompt требует native chat template модели")
         return [
             self._bos_id(),
             *self._role_ids(USER_TOKEN),

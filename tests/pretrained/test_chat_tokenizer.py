@@ -5,10 +5,15 @@ from collections.abc import Sequence
 from pathlib import Path
 
 import pytest
+import torch
+from torch import Tensor, nn
 
 from mini_llm.data.dataset import IGNORE_INDEX, DialogueDataset, collate_causal_lm_batch
 from mini_llm.data.dialogue import DialogueSample
 from mini_llm.data.interfaces import OversizedResponseError
+from mini_llm.pretrained.config import PretrainedConfig
+from mini_llm.pretrained.inference import QWEN_SYSTEM_PROMPT, generate_pretrained
+from mini_llm.pretrained.model import HuggingFaceCausalLMBackend, PreparedPretrained
 from mini_llm.pretrained.tokenizer import HuggingFaceDialogueTokenizer
 
 
@@ -44,7 +49,7 @@ class ChatTokenizer:
         assert not return_dict
         tokens: list[int] = []
         for message in messages:
-            tokens.append(11 if message["role"] == "user" else 12)
+            tokens.append({"system": 10, "user": 11, "assistant": 12}[message["role"]])
             tokens.extend(self.encode(message["content"], add_special_tokens=False))
             tokens.append(self.eos_token_id)
         if add_generation_prompt:
@@ -94,6 +99,7 @@ class ThinkingTokenizer(ChatTokenizer):
     def __init__(self) -> None:
         self.chat_template = "native-template-with-enable_thinking"
         self.calls: list[tuple[bool, bool | None]] = []
+        self.conversations: list[list[dict[str, str]]] = []
 
     def apply_chat_template(
         self,
@@ -105,6 +111,7 @@ class ThinkingTokenizer(ChatTokenizer):
         enable_thinking: bool | None = None,
     ) -> list[int]:
         self.calls.append((add_generation_prompt, enable_thinking))
+        self.conversations.append([dict(message) for message in messages])
         tokens = super().apply_chat_template(
             messages,
             tokenize=tokenize,
@@ -180,6 +187,66 @@ def test_unused_reasoning_template_does_not_change_default_template() -> None:
     tokenizer = HuggingFaceDialogueTokenizer(backend)
     assert tokenizer.encode_prompt("text") == [11, *tokenizer.encode("text"), 2, 12]
     assert backend.calls == [(True, None)]
+
+
+class PromptRecordingModel(nn.Module):
+    """Записать вход генерации без загрузки весов или запуска реальной модели."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.anchor = nn.Parameter(torch.zeros(1))
+        self.input_ids: Tensor | None = None
+
+    def generate(self, **kwargs: object) -> Tensor:
+        input_ids = kwargs["input_ids"]
+        assert isinstance(input_ids, Tensor)
+        self.input_ids = input_ids.clone()
+        return torch.cat((input_ids, torch.tensor([[ord("a") + 100, 2]])), dim=1)
+
+
+@pytest.mark.parametrize(
+    ("model_id", "use_system"),
+    [
+        ("Qwen/Qwen3-0.6B", True),
+        ("Qwen/Qwen2.5-0.5B-Instruct", True),
+        ("local/Qwen3-adapter", True),
+        ("org/other-model", False),
+    ],
+)
+def test_generation_adds_system_role_only_for_qwen(model_id: str, use_system: bool) -> None:
+    backend = ThinkingTokenizer()
+    tokenizer = HuggingFaceDialogueTokenizer(backend)
+    model = PromptRecordingModel()
+    prepared = PreparedPretrained(
+        HuggingFaceCausalLMBackend(model, PretrainedConfig(model_id=model_id)), tokenizer
+    )
+    result = generate_pretrained(prepared, "Привет")
+    expected_messages = [{"role": "user", "content": "Привет"}]
+    if use_system:
+        expected_messages.insert(0, {"role": "system", "content": QWEN_SYSTEM_PROMPT})
+    assert backend.conversations == [expected_messages]
+    assert backend.calls == [(True, False)]
+    assert result.text == "a"
+    assert result.token_ids == [ord("a") + 100]
+    sample = DialogueSample(
+        "b",
+        1,
+        ("Привет",),
+        "ответ",
+        tuple((message["role"], message["content"]) for message in expected_messages)
+        + (("assistant", "ответ"),),
+    )
+    window = tokenizer.encode_training_window(sample, max_length=1024)
+    assert model.input_ids is not None
+    assert model.input_ids[0].tolist() == window.token_ids[: window.response_start]
+
+
+def test_system_prompt_without_native_template_is_not_silently_ignored() -> None:
+    backend = ChatTokenizer()
+    backend.chat_template = None
+    tokenizer = HuggingFaceDialogueTokenizer(backend)
+    with pytest.raises(RuntimeError, match="native chat template"):
+        tokenizer.encode_prompt("Привет", system_prompt=QWEN_SYSTEM_PROMPT)
 
 
 @pytest.mark.parametrize("native_template", [True, False])

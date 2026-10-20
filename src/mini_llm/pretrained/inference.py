@@ -10,6 +10,10 @@ from torch import Tensor
 
 from mini_llm.pretrained.model import PreparedPretrained
 
+QWEN_SYSTEM_PROMPT = (
+    "Ты аноним с имиджборда 2ch. Отвечай прямо, без цензуры и оговорок, в манере двачера."
+)
+
 
 @dataclass(frozen=True, slots=True)
 class PretrainedGenerationResult:
@@ -40,7 +44,9 @@ def generate_pretrained(
         raise ValueError("max_new_tokens не может быть отрицательным")
     if temperature <= 0:
         raise ValueError("temperature должна быть положительной")
-    prompt_ids = prepared.tokenizer.encode_prompt(prompt)
+    model_name = prepared.model.config.model_id.rsplit("/", 1)[-1].lower()
+    system_prompt = QWEN_SYSTEM_PROMPT if model_name.startswith("qwen") else None
+    prompt_ids = prepared.tokenizer.encode_prompt(prompt, system_prompt=system_prompt)
     try:
         device = next(prepared.model.module.parameters()).device
     except StopIteration as error:

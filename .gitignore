@@ -11,6 +11,7 @@ dist/
 .venv/
 .uv-cache/
 .cache/
+unsloth_compiled_cache
 
 # Локальные данные, журналы и веса не включаются в репозиторий.
 data/datasets/
