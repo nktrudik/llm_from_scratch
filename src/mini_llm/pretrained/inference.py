@@ -32,7 +32,7 @@ def generate_pretrained(
     prepared: PreparedPretrained,
     prompt: str,
     *,
-    max_new_tokens: int = 128,
+    max_new_tokens: int = 1024,
     temperature: float = 0.8,
     top_k: int | None = 50,
 ) -> PretrainedGenerationResult:

@@ -96,7 +96,9 @@ def main() -> None:
     h1 {letter-spacing: -.04em;}
     </style>
     """)
-    page = st.segmented_control("Раздел", ["Чат", "Обучение", "Модели"], default="Чат")
+    page = st.segmented_control(
+        "Раздел", ["Чат", "Обучение", "Модели", "Проверка checkpoints"], default="Чат"
+    )
     if page == "Обучение":
         from mini_llm.ui.training import render_training
 
@@ -105,6 +107,10 @@ def main() -> None:
         from mini_llm.ui.models import render_models
 
         render_models()
+    elif page == "Проверка checkpoints":
+        from mini_llm.ui.evaluation import render_evaluation
+
+        render_evaluation()
     else:
         render_chat()
 

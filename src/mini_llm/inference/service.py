@@ -83,6 +83,18 @@ def _generate_custom(
         raise RuntimeError("Для custom backend не указан checkpoint_file")
     tokenizer = BPETokenizer.load(tokenizer_file)
     model = _load_custom_model(config.checkpoint_file, device)
+    return _generate_custom_response(prompt, config, device, model, tokenizer)
+
+
+def _generate_custom_response(
+    prompt: str,
+    config: GenerationConfig,
+    device: torch.device,
+    model: DecoderOnlyTransformer,
+    tokenizer: BPETokenizer,
+) -> GenerationResult:
+    """Генерировать с уже загруженными весами и tokenizer без повторного чтения диска."""
+
     prompt_ids = [
         tokenizer.token_to_id(BOS_TOKEN),
         tokenizer.token_to_id(USER_TOKEN),

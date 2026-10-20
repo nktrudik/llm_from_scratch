@@ -24,7 +24,7 @@ class GenerationConfig:
     checkpoint_file: Path | None = DEFAULT_CUSTOM_CHECKPOINT_PATH
     tokenizer_file: Path | None = DEFAULT_TOKENIZER_PATH
     device: str = "cuda"
-    max_new_tokens: int = 512
+    max_new_tokens: int = 1024
     temperature: float = 0.8
     top_k: int | None = 50
     model_backend: Literal["custom", "pretrained"] = "custom"

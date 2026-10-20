@@ -30,6 +30,7 @@ class JobRecord:
     result: object | None = None
     error: str | None = None
     operation_progress: dict[str, object] | None = None
+    evaluation_progress: dict[str, object] | None = None
     stop_requested: bool = False
 
     def to_dict(self) -> dict[str, object]:
@@ -111,15 +112,26 @@ class JobManager:
                 if self._active_job_id == job_id:
                     self._active_job_id = None
 
+    def report_evaluation(self, job_id: str, progress: dict[str, object]) -> None:
+        """Хранить только счётчики и один последний ответ проверки checkpoints."""
+
+        with self._lock:
+            self._jobs[job_id].evaluation_progress = dict(progress)
+
     def request_stop(self, job_id: str) -> dict[str, object]:
-        """Остановить только обучение, сохранив последний законченный шаг."""
+        """Остановить обучение после шага или проверку checkpoints после вопроса."""
 
         with self._lock:
             record = self._jobs.get(job_id)
             if record is None:
                 raise KeyError(job_id)
-            if record.kind != "training" or record.status not in {"queued", "running"}:
-                raise ValueError("Остановить можно только активное обучение")
+            if record.kind not in {"training", "checkpoint_evaluation"} or record.status not in {
+                "queued",
+                "running",
+            }:
+                raise ValueError(
+                    "Остановить можно только активное обучение или проверку checkpoints"
+                )
             record.stop_requested = True
             self._stop_events[job_id].set()
             return record.to_dict()

@@ -128,7 +128,7 @@ def test_generation_defaults_depend_on_backend(
     assert pretrained.pretrained_config_file == DEFAULT_PRETRAINED_CONFIG_PATH
     assert pretrained.tokenizer_file is None
     assert pretrained.device == custom.device == "cuda"
-    assert pretrained.max_new_tokens == custom.max_new_tokens == 256
+    assert pretrained.max_new_tokens == custom.max_new_tokens == 1024
 
 
 def test_generation_pretrained_explicit_paths_override_defaults() -> None:

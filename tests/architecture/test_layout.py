@@ -19,6 +19,8 @@ def test_ui_has_an_isolated_streamlit_entrypoint() -> None:
         "app.py",
         "client.py",
         "config.py",
+        "evaluation.py",
+        "evaluation_client.py",
         "http.py",
         "models.py",
         "models_client.py",

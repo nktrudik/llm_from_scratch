@@ -7,6 +7,7 @@ from dataclasses import asdict
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException, status
 
+from mini_llm.api.evaluations import create_evaluation_router
 from mini_llm.api.jobs import JobAlreadyRunningError, JobManager
 from mini_llm.api.models import create_model_router
 from mini_llm.api.schemas import (
@@ -57,6 +58,7 @@ app = FastAPI(
 )
 job_manager = JobManager()
 app.include_router(create_model_router(job_manager))
+app.include_router(create_evaluation_router(job_manager))
 
 
 @app.get("/v1/workspace")

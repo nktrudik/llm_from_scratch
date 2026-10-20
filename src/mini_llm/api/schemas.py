@@ -18,6 +18,7 @@ from mini_llm.inference.config import (
     DEFAULT_PRETRAINED_CONFIG_PATH,
     PretrainedGenerationMode,
 )
+from mini_llm.inference.evaluation.schemas import EvaluationProgress
 from mini_llm.inference.experiments import experiment_directory, resolve_experiment_checkpoint
 from mini_llm.modeling.config import DEFAULT_MAX_SEQUENCE_LENGTH
 from mini_llm.observability.training import TrainingProgress
@@ -49,6 +50,7 @@ class JobResponse(BaseModel):
     error: str | None = None
     progress: TrainingProgress | None = None
     operation_progress: OperationProgress | None = None
+    evaluation_progress: EvaluationProgress | None = None
     stop_requested: bool = False
 
 
@@ -264,7 +266,7 @@ class GenerationRequest(BaseModel):
         description="Имя запуска внутри checkpoints/runs; только для custom_checkpoint",
     )
     device: str = "cuda"
-    max_new_tokens: int = Field(default=256, ge=0)
+    max_new_tokens: int = Field(default=1024, ge=0)
     temperature: float = Field(default=0.3, gt=0)
     top_k: int | None = Field(default=20, ge=1)
 
@@ -284,7 +286,7 @@ class GenerationRequest(BaseModel):
                     "checkpoint_file": str(DEFAULT_PRETRAINED_CHECKPOINT_PATH),
                     "pretrained_config_file": str(DEFAULT_PRETRAINED_CONFIG_PATH),
                     "device": "cuda",
-                    "max_new_tokens": 256,
+                    "max_new_tokens": 1024,
                     "temperature": 0.3,
                     "top_k": 20,
                 },

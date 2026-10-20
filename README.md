@@ -21,6 +21,9 @@ UI: http://127.0.0.1:8501 · API: http://127.0.0.1:8000/docs.
 Другой API: `$env:MINI_LLM_API_URL="http://127.0.0.1:8000"` перед запуском UI.
 
 - **Чат:** модель → версия (базовая или запуск) → checkpoint; один вопрос/ответ без памяти.
+- **Проверка checkpoints:** модель → запуск → «Проверить все checkpoints». Пять фиксированных вопросов
+  на каждый `.pt`, до 1024 новых токенов; прогресс/ETA, один последний ответ и остановка между вопросами.
+  Полный отчёт: `artifacts/evaluations/<run_id>/evaluation-<id>.md`, сохраняется после каждого ответа.
 - **Обучение:** версия датасета → модель → новый запуск/resume → параметры.
   Редкие параметры скрыты в «Настройки». Видны шаги, loss, график и примерный ETA.
   «Остановить обучение» завершает текущий шаг и сохраняет native checkpoint и last.pt.
@@ -84,6 +87,7 @@ Unsloth необязателен: `uv sync --locked --extra dev --extra ui --ext
 python -m mini_llm.pretrained setup "Qwen/Qwen3-0.6B"
 python -m mini_llm.workspace split --dataset 2ch --version v5
 python -m mini_llm.workspace train --dataset 2ch --version v5 --model "Qwen/Qwen3-0.6B" --parameters configs/training/qlora-qa.json
+python -m mini_llm.inference.evaluation --run-id "<run_id>"  # Через запущенный API, тот же GPU-слот
 # Resume: к train добавьте --resume-run "<run_id>" --checkpoint last.pt
 python -m pytest
 python -m ruff check .
@@ -92,8 +96,5 @@ python -m mypy .
 python -m bandit -r src -q
 ```
 
-Splits/токенизация используют CPU/RAM; QLoRA и обычная генерация — GPU.
-Scraper, preprocessing, собственный BPE и statistics доступны через существующие CLI/Swagger.
-Основа: [статья](https://habr.com/ru/companies/otus/articles/1026700/),
-[TRL](https://huggingface.co/docs/trl/v1.0.0/en/sft_trainer),
-[Unsloth](https://unsloth.ai/docs/get-started/install/windows-installation).
+Splits/токенизация — CPU/RAM, QLoRA/генерация — GPU. Checkpoints идут последовательно, base model/tokenizer загружаются один раз; при ошибке сохраняется частичный отчёт, без retry.
+Основа: [TRL](https://huggingface.co/docs/trl/v1.0.0/en/sft_trainer), [Unsloth](https://unsloth.ai/docs/get-started/install/windows-installation).
